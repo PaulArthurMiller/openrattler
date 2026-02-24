@@ -64,12 +64,47 @@
 - All timestamps are `datetime.now(timezone.utc)` — always timezone-aware UTC
 - `# noqa: A002` comment on the `type` parameter suppresses the "shadows builtin" lint note while keeping the name consistent with the Pydantic field
 
-### Next Steps for Piece 1.2
+---
 
-- Reference documents: `ARCHITECTURE.md` (Session Routing, Agent Runtime, Tool Framework), `AGENT_CREATOR.md`
-- Create feature branch: `git checkout -b build/1.2-session-agent-tool-models`
-- Implement `openrattler/models/sessions.py` (`SessionKey`, `Session`, `Peer`)
-- Implement `openrattler/models/agents.py` (`TrustLevel`, `AgentConfig`, `TaskTemplate`, `AgentCreationRequest`, `AgentSpawnLimits`)
-- Implement `openrattler/models/tools.py` (`ToolDefinition`, `ToolCall`, `ToolResult`)
-- Implement `openrattler/models/audit.py` (`AuditEvent`)
-- Write tests for each new model file
+## Build Piece 1.2 — Session, Agent, Tool, and Audit Models ✅
+
+**Status:** Complete — on branch `build/1.2-session-agent-tool-models`, PR pending review
+
+### Files Created
+
+- `openrattler/models/sessions.py` — `SessionKey` (Annotated validated str), `Session`, `Peer` (self-referential with `model_rebuild()`)
+- `openrattler/models/agents.py` — `TrustLevel` (str Enum), `AgentConfig`, `TaskTemplate` (with complexity range validator), `AgentCreationRequest`, `AgentSpawnLimits`
+- `openrattler/models/audit.py` — `AuditEvent`
+- `openrattler/models/tools.py` — `ToolDefinition`, `ToolCall`, `ToolResult`
+- `openrattler/models/__init__.py` — updated to export all new symbols
+- `tests/test_models/test_sessions.py` — 25 tests
+- `tests/test_models/test_agents.py` — 31 tests
+- `tests/test_models/test_audit.py` — 9 tests
+- `tests/test_models/test_tools.py` — 22 tests
+
+### Test Results
+
+```
+132 passed in 0.21s  (87 new + 45 prior)
+```
+
+- `black --check .` — 34 files unchanged ✅
+- `mypy openrattler/` — no issues in 17 source files ✅
+- `pytest` — 132 collected, 132 passed ✅
+
+### Design Decisions
+
+- `SessionKey` is `Annotated[str, BeforeValidator(...)]` — makes it a reusable, exportable type alias that enforces format at every validation point; rejects `..`, absolute paths, missing `agent:` prefix, and non-alphanumeric characters
+- `Peer` uses `Optional["Peer"]` + `model_rebuild()` for the self-referential `parent` field (Pydantic v2 pattern)
+- `TrustLevel` is `str, Enum` with values matching `TrustLevelType` literals in `messages.py` exactly — downstream permission checks can compare enum values directly to string literals
+- `TaskTemplate.typical_complexity_range` uses a `@field_validator` to enforce 0–10 bounds and min≤max
+- `ToolDefinition.trust_level_required: TrustLevel` (enum, not Literal) — permission layer can iterate over enum values and compare programmatically
+- `ToolResult.result: Any` — tool output is intentionally untyped; the executor validates it before returning to the LLM
+
+### Next Steps for Piece 2.1
+
+- Reference documents: `ARCHITECTURE.md` (Session Routing, JSONL for Session Transcripts), `PROGRESS.md`
+- Create feature branch: `git checkout -b build/2.1-transcript-storage`
+- Implement `openrattler/storage/transcripts.py` with `TranscriptStore`
+- Path sanitization must reject `..`, absolute paths, and non-safe characters in session keys
+- Use `asyncio` for all file I/O; concurrent append safety is required
