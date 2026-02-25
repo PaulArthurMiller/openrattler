@@ -103,6 +103,42 @@
 
 ---
 
+## Build Piece 2.2 — Memory Store ✅
+
+**Status:** Complete — on branch `build/2.2-memory-store`, PR pending review
+
+### Files Created
+
+- `openrattler/storage/memory.py` — `MemoryStore` + diff/path helpers + sync I/O helpers
+- `tests/test_storage/test_memory.py` — 41 tests across 6 test classes
+
+### Test Results
+
+```
+211 passed in 1.68s  (41 new + 170 prior)
+```
+
+- `black --check .` — 38 files unchanged ✅
+- `mypy openrattler/` — no issues in 19 source files ✅
+- `pytest` — 211 collected, 211 passed ✅
+
+### Design Decisions
+
+- Agent memory lives at `{base_dir}/{agent_id}/memory.json` — one directory and one file per agent
+- Agent ID validation rejects `..`, absolute paths, and any character outside `[a-zA-Z0-9_-]`; colons are explicitly rejected so agent IDs cannot masquerade as session keys
+- Writes are atomic via temp-file (`memory.tmp`) + `Path.replace()` rename; `replace()` is used (not `rename()`) because it is atomic even when the target already exists on Windows
+- `compute_diff` excludes the `history` key from comparison — history grows monotonically and comparing it would produce spurious noise
+- `apply_changes` silently ignores any `"history"` key in caller-supplied changes — callers can never overwrite history; it is always append-only
+- History entries record `timestamp` (ISO UTC), `change` (human-readable diff summary), and `approved_by` (identity of authoriser)
+
+### Notes for Piece 2.3 (Audit Log)
+
+- `AuditEvent` model already exists in `openrattler/models/audit.py` from Piece 1.2 — import it directly
+- The audit log is append-only JSONL (like transcripts) but with optional HMAC signing per entry
+- `AuditLog` will be consumed by many downstream components — keep the constructor simple and `log()` fast
+
+---
+
 ## Build Piece 2.1 — JSONL Transcript Storage ✅
 
 **Status:** Complete — on branch `build/2.1-transcript-storage`, PR pending review
