@@ -101,10 +101,34 @@
 - `ToolDefinition.trust_level_required: TrustLevel` (enum, not Literal) — permission layer can iterate over enum values and compare programmatically
 - `ToolResult.result: Any` — tool output is intentionally untyped; the executor validates it before returning to the LLM
 
-### Next Steps for Piece 2.1
+---
 
-- Reference documents: `ARCHITECTURE.md` (Session Routing, JSONL for Session Transcripts), `PROGRESS.md`
-- Create feature branch: `git checkout -b build/2.1-transcript-storage`
-- Implement `openrattler/storage/transcripts.py` with `TranscriptStore`
-- Path sanitization must reject `..`, absolute paths, and non-safe characters in session keys
-- Use `asyncio` for all file I/O; concurrent append safety is required
+## Build Piece 2.1 — JSONL Transcript Storage ✅
+
+**Status:** Complete — on branch `build/2.1-transcript-storage`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/storage/__init__.py` — package docstring
+- `openrattler/storage/transcripts.py` — `TranscriptStore` + path helpers + sync I/O helpers
+- `tests/test_storage/__init__.py` — empty package marker
+- `tests/test_storage/test_transcripts.py` — 38 tests across 7 test classes
+
+### Test Results
+
+```
+170 passed in 0.39s  (38 new + 132 prior)
+```
+
+- `black --check .` — 36 files unchanged ✅
+- `mypy openrattler/` — no issues in 18 source files ✅
+- `pytest` — 170 collected, 170 passed ✅
+
+### Design Decisions
+
+- Session key → filesystem path: replace `:` with path separators, append `.jsonl` suffix; `agent:main:main` → `{base_dir}/agent/main/main.jsonl`
+- `_validate_session_key()` guards all public methods: rejects `..`, absolute paths, missing `agent:` prefix, and any character outside `[a-zA-Z0-9_-:]`
+- Per-session `asyncio.Lock` stored in `self._locks` dict — safe because asyncio event loop is single-threaded between `await` points
+- All file I/O dispatched via `asyncio.to_thread()` to keep the event loop unblocked
+- `load_recent()` reads all lines then slices the tail — fast enough for typical session lengths; a backwards-seek optimisation can be added if needed
+- `list_sessions()` uses `Path.rglob("*.jsonl")` and `_path_to_key()` for the reverse mapping
