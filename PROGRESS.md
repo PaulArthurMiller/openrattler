@@ -103,6 +103,41 @@
 
 ---
 
+## Build Piece 2.3 — Audit Log ✅
+
+**Status:** Complete — on branch `build/2.3-audit-log`, PR pending review
+
+### Files Created
+
+- `openrattler/storage/audit.py` — `AuditLog` + `audit_log()` convenience function + HMAC helpers + sync I/O helpers
+- `tests/test_storage/test_audit.py` — 34 tests across 7 test classes
+
+### Test Results
+
+```
+245 passed in 3.04s  (34 new + 211 prior)
+```
+
+- `black --check .` — 40 files unchanged ✅
+- `mypy openrattler/` — no issues in 20 source files ✅
+- `pytest` — 245 collected, 245 passed ✅
+
+### Design Decisions
+
+- **No `delete`, `clear`, `modify`, or `truncate` methods** — append-only by design; the audit log is intentionally write-only after the fact
+- **HMAC signing**: when `hmac_key` is set, each event dict is serialized with `json.dumps(sort_keys=True, separators=(',',':'))` for canonical byte ordering, signed with HMAC-SHA256, and the `_hmac` hex digest is added to the written JSON line. Verification re-derives the canonical bytes and uses `hmac.compare_digest` (constant-time) to prevent timing attacks
+- **Unsigned lines in a signed log are flagged as bad** — they may represent injected lines added after signing was enabled
+- **`query()` returns the last `limit` matching events** (most recent tail), consistent with `load_recent` semantics in transcripts
+- **`audit_log()` convenience function** uses an explicit `log=` kwarg or a module-level default set by `configure_default_log()`; silently no-ops when no log is configured so it's safe to call anywhere
+
+### Notes for Piece 3.1 (Session Router)
+
+- `AuditLog` is now ready to be injected into downstream components
+- `AuditEvent` model is in `openrattler.models.audit`; `AuditLog` + `audit_log` are in `openrattler.storage.audit`
+- Session routing produces keys of the form `agent:{agent_id}:{context}` — the router needs the `Peer` and `Binding` models from `openrattler.models.sessions`
+
+---
+
 ## Build Piece 2.2 — Memory Store ✅
 
 **Status:** Complete — on branch `build/2.2-memory-store`, PR pending review
