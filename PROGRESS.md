@@ -103,6 +103,43 @@
 
 ---
 
+## Build Piece 3.1 — Session Router ✅
+
+**Status:** Complete — on branch `build/3.1-session-router`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/gateway/__init__.py` — package docstring
+- `openrattler/gateway/router.py` — `route_to_session()`, `Binding`, `resolve_agent()`
+- `tests/test_gateway/test_router.py` — 35 tests across 5 test classes
+
+### Test Results
+
+```
+280 passed in 0.94s  (35 new + 245 prior)
+```
+
+- `black --check .` — 42 files unchanged ✅
+- `mypy openrattler/` — no issues in 21 source files ✅
+- `pytest` — 280 collected, 280 passed ✅
+
+### Design Decisions
+
+- `route_to_session` takes `agent_id` (not `account_id` as the BUILD_GUIDE typo'd) — the parameter name must match what's embedded in the output key `agent:{agent_id}:...`
+- `ALLOWED_CHANNELS` is a module-level `frozenset` used by both `route_to_session` and `resolve_agent` — allowlist, not denylist, per the security principle
+- `resolve_agent` fails closed: raises `ValueError` on no match rather than returning a default agent, preventing silent misrouting
+- Thread routing is recursive — each level validates its own `peer.id`, so every component of a deeply nested key is safe
+- DM sessions always collapse to `agent:{agent_id}:main` regardless of peer ID, ensuring personal DM context is shared across reconnections
+- `Binding` filter fields are `Optional[str]` — a `None` field on a binding acts as a wildcard (matches anything the caller provides for that key)
+
+### Notes for Piece 4.1 (Tool Registry & Permissions)
+
+- `AuditLog` is now needed as a dependency of `ToolExecutor` — the test fixture will inject an `AuditLog(tmp_path/...)` instance
+- `TrustLevel` enum is in `openrattler.models.agents`; `ToolDefinition`, `ToolCall`, `ToolResult` are in `openrattler.models.tools` — import directly
+- `AgentConfig.allowed_tools` and `AgentConfig.denied_tools` are both `list[str]` (tool names); `AgentConfig.trust_level` is `TrustLevel`
+
+---
+
 ## Build Piece 2.3 — Audit Log ✅
 
 **Status:** Complete — on branch `build/2.3-audit-log`, PR pending review
