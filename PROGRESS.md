@@ -103,6 +103,48 @@
 
 ---
 
+## Build Piece 5.1 — LLM Provider Interface and OpenAI/Anthropic Implementations ✅
+
+**Status:** Complete — on branch `build/5.1-llm-provider-abstraction`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/agents/__init__.py` — package docstring
+- `openrattler/agents/providers/__init__.py` — package docstring
+- `openrattler/agents/providers/base.py` — `LLMProvider` ABC, `LLMResponse`, `TokenUsage`
+- `openrattler/agents/providers/openai_provider.py` — `OpenAIProvider` with retry/backoff
+- `openrattler/agents/providers/anthropic_provider.py` — `AnthropicProvider` with message/tool format conversion
+- `tests/test_agents/__init__.py` — test package
+- `tests/test_agents/test_providers.py` — 29 tests
+
+### Test Results
+
+```
+402 passed in 5.45s  (29 new + 373 prior)
+```
+
+- `black --check .` — 58 files unchanged ✅
+- `mypy openrattler/` — no issues in 31 source files ✅
+- `pytest` — 402 collected, 402 passed ✅
+
+### Design Decisions
+
+- **OpenAI format as canonical message format**: `complete()` accepts messages in OpenAI format (`{"role": "...", "content": "..."}`); `AnthropicProvider` converts internally — `system` messages are extracted and passed as Anthropic's top-level `system` parameter, `tool` role messages become Anthropic `tool_result` user turns
+- **Tool format conversion**: tools are accepted in OpenAI function-calling format; Anthropic provider maps `function.parameters` → `input_schema`
+- **Retry backoff**: both providers retry `RateLimitError` up to 3 times with `2^attempt` second delays (1 s, 2 s, 4 s); all other errors propagate immediately
+- **API key safety**: keys are stored in `_client` only; they never appear in log output, error messages, or exception tracebacks — errors are re-raised verbatim from the SDK which sanitises them
+- **Cost estimation**: per-model `_COST_PER_1K` tables (approximations); `estimated_cost_usd` is provided as a best-effort float, not billed amount
+- **Tests use real SDK response objects**: `ChatCompletion`, `AnthropicMessage`, `TextBlock`, `ToolUseBlock` etc. are constructed directly from the SDK types rather than using `MagicMock` for response data, giving realistic parse coverage
+- **Health checks**: both providers ping `client.models.list()`; return `False` on any exception
+
+### Notes for Piece 6.1 (Agent Turn Loop)
+
+- `AgentRuntime.__init__` will accept a `LLMProvider` — either `OpenAIProvider` or `AnthropicProvider` (or any future implementation)
+- `complete()` takes `messages: list[dict[str, Any]]` in OpenAI format; `AgentRuntime._build_messages()` must produce this format
+- Tool calls in `LLMResponse.tool_calls` are already `ToolCall` objects ready for `ToolExecutor.execute()`
+
+---
+
 ## Build Piece 4.2 — Built-in Tools ✅
 
 **Status:** Complete — on branch `build/4.2-built-in-tools`, PR pending review
