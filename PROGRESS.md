@@ -103,6 +103,43 @@
 
 ---
 
+## Build Piece 4.1 — Tool Registry and Permission Checking ✅
+
+**Status:** Complete — on branch `build/4.1-tool-registry-permissions`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/tools/__init__.py` — package docstring
+- `openrattler/tools/permissions.py` — `check_permission()`, `needs_approval()`, `_TRUST_ORDER`
+- `openrattler/tools/registry.py` — `ToolRegistry`, `@tool` decorator, `configure_default_registry()`
+- `openrattler/tools/executor.py` — `ToolExecutor` (permission-gated, audit-logged, never-raising)
+- `tests/test_tools/test_permissions.py` — 18 tests across 3 test classes
+- `tests/test_tools/test_registry.py` — 22 tests across 2 test classes
+- `tests/test_tools/test_executor.py` — 18 tests across 4 test classes
+
+### Test Results
+
+```
+337 passed in 0.89s  (57 new + 280 prior)
+```
+
+- `black --check .` — 48 files unchanged ✅
+- `mypy openrattler/` — no issues in 24 source files ✅
+- `pytest` — 337 collected, 337 passed ✅
+
+### Design Decisions
+
+- **Trust level ordering**: `public(0) < mcp(1) < main(2) = security(2) < local(3)` — higher number = more trusted; an agent can only invoke a tool if its trust rank ≥ the tool's required rank
+- **Deny takes priority**: `denied_tools` is checked before `allowed_tools`, so a tool in both lists is always rejected
+- **Empty allowlist denies all**: an agent with `allowed_tools=[]` cannot invoke any tool, not even public ones
+- **`@tool` decorator dual form**: supports both `@tool` (no parens) and `@tool(...)` (with parens) via `fn=None` default; attaches `._tool_definition` to the decorated function for introspection
+- **Parameter inference**: `_infer_parameters()` skips runtime-injected names (`self`, `session`, `context`, `agent_config`), maps Python types to JSON Schema types, and marks parameters without defaults as `required`
+- **`ToolExecutor` never raises**: every code path catches exceptions and returns a `ToolResult`; the LLM always receives a structured response, never a traceback
+- **Approval stub**: `needs_approval(tool_def)` is evaluated on every call but not yet acted upon — the human-in-the-loop flow (Piece 16.1) will route through an `ApprovalManager` here
+- **Audit log on every path**: success, permission denied, handler exception, and unknown-tool are all logged with `event="tool_execution"` and `success` bool
+
+---
+
 ## Build Piece 3.1 — Session Router ✅
 
 **Status:** Complete — on branch `build/3.1-session-router`, PR pending review
