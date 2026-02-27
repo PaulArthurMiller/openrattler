@@ -103,6 +103,46 @@
 
 ---
 
+## Build Piece 4.2 — Built-in Tools ✅
+
+**Status:** Complete — on branch `build/4.2-built-in-tools`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/tools/builtin/__init__.py` — package docstring
+- `openrattler/tools/builtin/file_ops.py` — `file_read`, `file_write`, `file_list` with path sanitization
+- `openrattler/tools/builtin/session_tools.py` — `sessions_history` with cross-session access controls
+- `openrattler/tools/registry.py` — added `@overload` signatures for `tool()` to satisfy mypy strict mode
+- `tests/test_tools/test_file_ops.py` — 26 tests across 3 test classes
+- `tests/test_tools/test_session_tools.py` — 10 tests
+
+### Test Results
+
+```
+373 passed in 1.15s  (36 new + 337 prior)
+```
+
+- `black --check .` — 53 files unchanged ✅
+- `mypy openrattler/` — no issues in 27 source files ✅
+- `pytest` — 373 collected, 373 passed ✅
+
+### Design Decisions
+
+- **Allowlist-only, disabled by default**: `_ALLOWED_DIRS` starts empty — no file access is possible until `configure_allowed_directories()` is called explicitly. This means importing the module cannot read or write files as a side effect.
+- **Dual-layer path validation**: `..` is rejected in `Path.parts` *before* resolution (defence against traversal-via-symlink and OS normalisation tricks), then the fully-resolved path must be `relative_to` at least one allowed directory.
+- **Configurable size limit**: `file_read` rejects files exceeding `_MAX_FILE_SIZE` (default 1 MB) to prevent memory exhaustion; tests can set `max_file_size=N` via `configure_allowed_directories`.
+- **Atomic writes**: `file_write` writes to `.tmp` then calls `Path.replace()` (not `rename()`) for atomicity even when the target already exists on Windows.
+- **`sessions_history` disabled by default**: module-level `_transcript_store` is `None` until `configure_transcript_store()` is called; any invocation before that raises `RuntimeError`.
+- **`@overload` on `tool()`**: Added typed overloads (`@tool` vs `@tool(...)`) to `registry.py` so mypy strict mode can infer the return type and not flag decorated functions as untyped. The runtime implementation is unchanged.
+
+### Notes for Piece 5.x (LLM Provider Abstraction)
+
+- All built-in tools are ready to be registered into a `ToolRegistry` via `registry.register(fn._tool_definition, fn)` or by calling `configure_default_registry()` before importing the builtin modules.
+- `sessions_history` will need `AgentRuntime` to wire up `configure_transcript_store(store)` at startup.
+- `file_read`/`file_write`/`file_list` will need `configure_allowed_directories([agent_workspace])` at session start.
+
+---
+
 ## Build Piece 4.1 — Tool Registry and Permission Checking ✅
 
 **Status:** Complete — on branch `build/4.1-tool-registry-permissions`, PR pending review

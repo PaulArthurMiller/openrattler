@@ -8,7 +8,9 @@ single source of truth for which tools exist and what their metadata is.
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TypeVar, overload
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.tools import ToolDefinition
@@ -136,6 +138,23 @@ def configure_default_registry(registry: ToolRegistry) -> None:
     """Set the module-level default registry used by the ``@tool`` decorator."""
     global _default_registry
     _default_registry = registry
+
+
+@overload
+def tool(fn: _F) -> _F: ...
+
+
+@overload
+def tool(
+    fn: None = ...,
+    *,
+    name: Optional[str] = ...,
+    description: Optional[str] = ...,
+    trust_level_required: TrustLevel = ...,
+    requires_approval: bool = ...,
+    security_notes: str = ...,
+    registry: Optional[ToolRegistry] = ...,
+) -> Callable[[_F], _F]: ...
 
 
 def tool(
