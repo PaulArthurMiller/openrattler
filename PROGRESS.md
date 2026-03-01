@@ -103,6 +103,43 @@
 
 ---
 
+## Build Piece 7.1 — PitchCatch Validator Framework ✅
+
+**Status:** Complete — on branch `build/7.1-pitchcatch-validator`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/security/rate_limiter.py` — `RateLimiter` with sliding per-minute and per-hour windows
+- `openrattler/security/validator.py` — `PitchCatchValidator` with 6-step validation pipeline
+- `tests/test_security/test_rate_limiter.py` — 13 tests across 4 test classes
+- `tests/test_security/test_validator.py` — 29 tests across 6 test classes
+
+### Test Results
+
+```
+467 passed in 5.72s  (42 new + 425 prior)
+```
+
+- `black --check .` — all files unchanged ✅
+- `mypy openrattler/` — no issues ✅
+- `pytest` — 467 collected, 467 passed ✅
+
+### Design Decisions
+
+- **6-step pipeline**: operation check → trust level check → required params check → param stripping → rate limiting → audit log. Failures at any step raise `PermissionError` (policy violation) or `ValueError` (structural problem) and are audit-logged before raising.
+- **Trust level comparison via `_TRUST_ORDER`**: reuses the numeric rank table from `openrattler.tools.permissions`. The validator's `trust_level` parameter sets the *minimum acceptable incoming rank*. `security` and `main` share rank 2, so they are interchangeable at `main`-level components.
+- **Param stripping (need-to-know)**: `validate_incoming` builds a new message with only required + optional params for the operation; the original message object is never mutated. Unknown params are silently dropped, not rejected — this is intentional (fail-open on unknown params prevents brittle coupling while still preventing data leakage to the component).
+- **Two-step rate limiting (`check` then `record`)**: callers can inspect limits before committing; the validator calls `check` then `record` in sequence so the limit is consumed only on valid, non-rate-limited messages.
+- **Sliding window, no external storage**: `RateLimiter` uses a per-key `deque` of UTC timestamps with an `asyncio.Lock` per key. Timestamps older than 1 hour are pruned on every access. Process-restart resets all limits — acceptable for the current threat model.
+- **`structure_outgoing` takes explicit `session_key` and `trace_id`**: unlike the protocol doc example which uses context globals, the method accepts them as arguments for clarity and testability.
+
+### Notes for Piece 8.1 (Input Sanitization)
+
+- `PitchCatchValidator` currently handles structural and policy validation. Content-level suspicious pattern scanning (prompt injection, exfiltration patterns) belongs in Piece 8.1 (`scan_for_suspicious_content`). The validator can be extended to call the scanner as a step 0 pre-check once 8.1 is in place.
+- `RateLimiter` is in-memory only. For multi-process deployments a Redis backend or similar shared store would be needed — mark as a future enhancement.
+
+---
+
 ## Build Piece 6.1 — Agent Turn Loop ✅
 
 **Status:** Complete — on branch `build/6.1-agent-turn-loop`, PR pending review
