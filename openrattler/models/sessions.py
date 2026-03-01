@@ -94,6 +94,10 @@ class Session(BaseModel):
     key: SessionKey
     agent_id: str
     history: list[UniversalMessage] = Field(default_factory=list)
+    system_prompt: str = Field(
+        default="",
+        description="System prompt injected at the start of every LLM call for this session",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="When this session was first created",
