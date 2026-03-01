@@ -137,6 +137,20 @@
 - **Tests use real SDK response objects**: `ChatCompletion`, `AnthropicMessage`, `TextBlock`, `ToolUseBlock` etc. are constructed directly from the SDK types rather than using `MagicMock` for response data, giving realistic parse coverage
 - **Health checks**: both providers ping `client.models.list()`; return `False` on any exception
 
+### Known Limitations: OpenAI Format as Canonical
+
+The `complete()` interface uses OpenAI's message format as the canonical standard. This was a deliberate pragmatic choice (OpenAI format is the de facto industry standard; many providers implement it, so `OpenAIProvider` covers them all via `base_url`), but it bakes in asymmetry:
+
+1. **Interface is not truly neutral.** `OpenAIProvider` is a passthrough. `AnthropicProvider` carries all the conversion burden. A properly symmetric design would define custom internal `Message`/`ToolResult` Pydantic models and have *each* provider convert from them.
+
+2. **Anthropic-specific features are inaccessible.** Prompt caching, extended thinking (`thinking` content blocks), vision content, and strongly-typed structured output all require Anthropic-native constructs that do not map through the OpenAI format. The current interface provides no way to express them.
+
+3. **Multi-turn tool use conversion is simplified.** The `tool_result` conversion (OpenAI `role:"tool"` → Anthropic `user` message with `tool_result` content block) handles the common single-tool case. Complex interleaved multi-tool turns may produce message sequences that the Anthropic API rejects.
+
+4. **Tool arguments are a JSON string (OpenAI) vs. native dict (Anthropic).** `OpenAIProvider._parse_response` parses the string; malformed JSON falls back to `{"_raw": ...}`. Anthropic `input` is always a native dict and requires no parsing.
+
+**Recommended follow-up (not a blocker for 6.1):** Define internal `Message` and `ToolResult` Pydantic models as the true canonical format. Have `AgentRuntime._build_messages()` produce those, and have each provider convert from them. This would make Anthropic-specific features expressible and remove the asymmetry.
+
 ### Notes for Piece 6.1 (Agent Turn Loop)
 
 - `AgentRuntime.__init__` will accept a `LLMProvider` — either `OpenAIProvider` or `AnthropicProvider` (or any future implementation)
