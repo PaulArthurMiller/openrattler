@@ -103,6 +103,37 @@
 
 ---
 
+## Build Piece 6.1 — Agent Turn Loop ✅
+
+**Status:** Complete — on branch `build/6.1-agent-turn-loop`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/models/sessions.py` — added `system_prompt: str` field to `Session`
+- `openrattler/agents/runtime.py` — `AgentRuntime` class: `initialize_session`, `process_message`, and all helpers
+- `tests/test_agents/test_runtime.py` — 23 tests across 5 test classes
+
+### Test Results
+
+```
+425 passed in 5.80s  (23 new + 402 prior)
+```
+
+- `black --check .` — all files unchanged ✅
+- `mypy openrattler/` — no issues ✅
+- `pytest` — 425 collected, 425 passed ✅
+
+### Design Decisions
+
+- **Never raises**: `process_message` wraps all logic in `try/except` — tool-loop overflow, provider errors, and any unexpected exception are all returned as `type="error"` `UniversalMessage` objects. Callers always receive a structured reply.
+- **Bounded tool loop**: `_MAX_TOOL_LOOPS = 10` caps the tool execution cycle per turn. If the limit is hit, an error response is returned and the audit log marks `exceeded_loop_limit: True`.
+- **Memory key extraction**: `MemoryStore` only accepts colon-free identifiers (e.g. `"main"`), but `AgentConfig.agent_id` uses full session-key style strings (e.g. `"agent:main:main"`). `initialize_session` extracts the bare agent name via `session_key.split(":")[1]` for memory lookups, keeping the full `agent_id` on the `Session` object for routing/audit purposes.
+- **System prompt composition**: `_build_system_prompt` appends a `## Memory` section when the memory dict is non-empty, so the LLM always has access to persistent facts without cluttering empty sessions.
+- **Ephemeral tool messages**: `assistant` tool-call turns and `tool` result turns are added only to the in-memory `messages` list for the current turn — they are never written to the transcript store, keeping the transcript clean for `_build_messages` on subsequent turns.
+- **Audit event per turn**: every `process_message` call logs an `agent_turn` event with `tool_loops`, `finish_reason`, and `exceeded_loop_limit`, regardless of success or failure.
+
+---
+
 ## Build Piece 5.1 — LLM Provider Interface and OpenAI/Anthropic Implementations ✅
 
 **Status:** Complete — on branch `build/5.1-llm-provider-abstraction`, PR pending review
