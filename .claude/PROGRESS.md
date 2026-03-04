@@ -390,3 +390,29 @@
 - `TokenAuth`, `Gateway`, and `ConnectionRateLimiter` are importable from `openrattler.gateway`
 - `Gateway.set_runtime(runtime, session)` is the wiring point for production use
 - `_build_app()` is the test-friendly entry point (no real TCP binding)
+
+### Piece 12.1 — Agent Creator Core (2026-03-04)
+
+**Files Created:**
+- `openrattler/agents/templates.py` — `TASK_TEMPLATES` dict with 4 built-in templates: research, coding, execution, analysis
+- `openrattler/agents/creator_validator.py` — `CreatorSecurityValidator` (hardcoded, not templated), `SpawnLimitError`, `SecurityError`, `AUTHORIZED_SPAWNERS`, `DANGEROUS_TOOLS`
+- `openrattler/agents/creator.py` — `AgentCreator` with `create_agent`, `kill_agent`, `list_agents`, `handle_retry`, `_enforce_timeout`
+- `tests/test_agents/test_templates.py` — 20 tests for template presence, schema validity, and content
+- `tests/test_agents/test_creator.py` — 27 tests for creation, limits, trust, isolation, kill, retry, audit
+
+**Test Results:** 702 passed, 1 skipped — full suite clean
+
+**Key Design Decisions:**
+- `agent_registry: dict[str, AgentConfig]` is a plain mutable dict owned by the caller; creator mutates it in place (no separate registry class needed yet)
+- `CreatorSecurityValidator` is constructed once inside `AgentCreator.__init__` and never replaced — hardcoded by design
+- Trust level is capped at `min(requester_trust, TrustLevel.main)` so subagents never exceed the requester's privilege
+- `AUTHORIZED_SPAWNERS` is a `frozenset` — adding a new spawner requires a code change, not a config edit
+- `task_matches_intent` and `tools_match_task` are stubs returning `True` with clear `TODO` comments for LLM wiring
+- `_enforce_timeout` uses `asyncio.create_task`; tasks stored in `_timeout_tasks` and cancelled on early kill
+- `handle_retry` is the entry point for retries; `create_agent` does not handle retry logic
+- Rate limiting uses a monotonic sliding window (60 s); resets are not persisted (fine for single-process use)
+
+**Notes for Next Piece (13.1 — Memory Security Agent):**
+- `SUSPICIOUS_PATTERNS` from `openrattler.security.patterns` is the pattern-matching backbone to wire into `MemorySecurityAgent`
+- `scan_for_suspicious_content` returns `[(category, matched_text)]` — use directly in the review pipeline
+- `MemoryStore.apply_changes_with_review` will need to accept a `MemorySecurityAgent` parameter
