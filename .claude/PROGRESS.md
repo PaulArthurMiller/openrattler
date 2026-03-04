@@ -362,3 +362,31 @@
 
 **Notes for Next Piece:**
 - The next build piece is 11.1 (check BUILD_GUIDE.md for details)
+
+### Piece 11.1 — WebSocket Gateway Server (2026-03-04)
+
+**Files Created:**
+- `openrattler/gateway/auth.py` — `TokenAuth`: HMAC-SHA256 signed tokens, expiry, no external JWT library
+- `openrattler/gateway/server.py` — `Gateway`, `ConnectionRateLimiter`, `ConnectionInfo`; full SU-007 compliance
+- `tests/test_gateway/test_auth.py` — 13 tests for token generation, expiry, tampering, malformed inputs
+- `tests/test_gateway/test_server.py` — 19 tests for health endpoint, auth, protocol version, rate limiting, message routing, disconnect, proxy trust
+- Updated `openrattler/gateway/__init__.py` — public API exports
+- Updated `pyproject.toml` — added `pytest-aiohttp>=1.0` to dev dependencies
+
+**Test Results:** 638 passed, 1 skipped — full suite clean
+
+**Key Design Decisions (SU-007):**
+- Auth via HTTP `Authorization: Bearer <token>` header BEFORE WebSocket upgrade — unauthenticated connections never consume WS resources
+- Protocol version via `X-Protocol-Version` header; downgrade attempts are logged as `gateway_protocol_downgrade_attempt` events
+- `trusted_proxies` list controls which IPs can supply `X-Forwarded-For`; defaults to `["127.0.0.1", "::1"]`
+- Connection rate limiter runs at transport level (before auth); `ConnectionRateLimiter` is independently testable
+- Exactly two routes: `/ws` (authenticated) and `/health` (unauthenticated, returns only `"ok"`)
+- `_build_app()` is separated from `start()` so tests can use `TestServer(gw._build_app())` without binding a real port
+- `set_runtime(runtime, session)` injects the agent after construction; if not set, `route_message` returns an error `UniversalMessage`
+- `TokenAuth` with `expiry_seconds=0` disables expiry (useful in tests)
+- Timing race in disconnect test fixed by yielding to event loop (`asyncio.sleep(0.05)`)
+
+**Notes for Next Piece (12.1 — Agent Creator Core):**
+- `TokenAuth`, `Gateway`, and `ConnectionRateLimiter` are importable from `openrattler.gateway`
+- `Gateway.set_runtime(runtime, session)` is the wiring point for production use
+- `_build_app()` is the test-friendly entry point (no real TCP binding)
