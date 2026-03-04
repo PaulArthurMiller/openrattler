@@ -317,3 +317,26 @@
 - `sanitize_path`, `sanitize_session_key`, and `validate_agent_id` should be used inside config loading wherever paths or IDs appear in config files
 - `CommandFilter` and `scan_for_suspicious_content` should be wired into the tool executor and security agent in later pieces
 - The symlink test is skipped on Windows without elevated privileges; it will pass on Linux/macOS CI
+
+### Piece 9.1 — Configuration Loading and Security Profiles (2026-03-04)
+
+**Files Created:**
+- `openrattler/config/__init__.py` — public API exports
+- `openrattler/config/loader.py` — `SecurityConfig`, `BudgetConfig`, `ChannelConfig`, `AppConfig`, `load_config`, `save_config`, `DEFAULT_CONFIG_PATH`
+- `openrattler/config/profiles.py` — `SECURITY_PROFILES`, `PROFILE_ORDER`, `apply_profile`
+- `tests/test_config/test_loader.py` — 14 tests
+- `tests/test_config/test_profiles.py` — 21 tests
+
+**Test Results:** 579 passed, 1 skipped — full suite clean
+
+**Key Design Decisions:**
+- `SecurityConfig` uses `Optional[bool] = None` for all layer fields so `None` means "use profile default" — explicit `True`/`False` means user override
+- `apply_profile` resolves `None` → profile default, preserves non-None user values; never mutates the input config
+- `ChannelConfig.settings: dict[str, Any]` holds channel-specific keys (e.g. twilio_sid) cleanly without `extra="allow"` complexity
+- `save_config` creates parent dir with `mode=0o700` to protect secrets at rest
+- `load_config` returns default `AppConfig()` for missing files — first-run works without setup
+
+**Notes for Next Piece (10.1 — CLI Chat Interface):**
+- Import `load_config`, `apply_profile` from `openrattler.config` for config loading in the CLI
+- `ChannelConfig` is the right model to use for the CLI channel entry in `config.channels["cli"]`
+- `DEFAULT_CONFIG_PATH` (`~/.openrattler/config.json`) should be the default for `openrattler init`
