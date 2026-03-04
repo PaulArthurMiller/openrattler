@@ -17,7 +17,10 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from openrattler.security.memory_security import MemorySecurityAgent
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -206,6 +209,42 @@ class MemoryStore:
 
         await self.save(agent_id, updated)
         return True
+
+    async def apply_changes_with_review(
+        self,
+        agent_id: str,
+        changes: dict[str, Any],
+        session_key: str,
+        security_agent: "MemorySecurityAgent",
+    ) -> tuple[bool, Optional[str]]:
+        """Run a security review then apply *changes* if the review passes.
+
+        Computes the diff between the current on-disk memory and the
+        proposed *changes*, asks the MemorySecurityAgent to review it, and
+        only calls apply_changes when the result is not suspicious.
+
+        Args:
+            agent_id:       Agent whose memory to update.
+            changes:        Shallow map of top-level keys to new values.
+            session_key:    Session requesting the write (used for policy
+                            checks inside the security agent).
+            security_agent: Gatekeeper that reviews the diff.
+
+        Returns:
+            ``(True, None)`` on success.
+            ``(False, reason)`` when the security agent blocks the write.
+
+        Security notes:
+        - The security agent is always consulted — there is no bypass path.
+        - ``approved_by`` is set to ``"security_agent"`` so the history entry
+          correctly attributes the authorisation to the automated reviewer.
+        """
+        diff = await self.compute_diff(agent_id, changes)
+        result = await security_agent.review_memory_change(agent_id, diff, session_key)
+        if result.suspicious:
+            return False, result.reason
+        await self.apply_changes(agent_id, changes, approved_by="security_agent")
+        return True, None
 
 
 # ---------------------------------------------------------------------------

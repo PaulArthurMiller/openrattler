@@ -1,5 +1,42 @@
 # OpenRattler — Build Progress
 
+## Build Piece 13.1 — Memory Security Agent ✅
+
+**Status:** Complete — on branch `build/13.1-memory-security-agent`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/security/memory_security.py` — `SecurityResult` (Pydantic model), `MemorySecurityAgent` with `review_memory_change` pipeline
+- `openrattler/storage/memory.py` — added `apply_changes_with_review` method to `MemoryStore`
+- `tests/test_security/test_memory_security.py` — 25 tests across 5 test classes
+
+### Test Results
+
+```
+727 passed, 1 skipped in 14.06s  (25 new + 702 prior)
+```
+
+- `black --check .` — 90 files unchanged ✅
+- `mypy openrattler/` — no issues in 48 source files ✅
+- `pytest` — 727 collected (+1 skipped), 727 passed ✅
+
+### Design Decisions
+
+- **`suspicious_patterns: list[str]` is category names** — not raw regexes. Callers pass category names from `SUSPICIOUS_PATTERNS` (e.g. `["command_injection", "instruction_override"]`). An empty list disables pattern blocking entirely, leaving only the session-level policy check. This mirrors the "tunable security" principle.
+- **Never raises** — `review_memory_change` has an outer try/except that returns a `SecurityResult(suspicious=True, confidence=100)` on any unexpected error (fail-secure). The inner `_do_review` does the real work, cleanly separated for testability.
+- **`apply_changes_with_review` in `MemoryStore`** — uses `TYPE_CHECKING` import to avoid a circular dependency at module load time (storage → security → storage/audit), while still satisfying mypy strict mode.
+- **Confidence levels** — 100 for pattern match hits, 80 for policy-only violations (non-main session touching `instructions`), 0 for clean. The two-tier confidence scale gives callers signal about the threat type without adding complexity.
+- **`approved_by = "security_agent"`** — history entries written via `apply_changes_with_review` correctly attribute the authorisation to the automated reviewer, not the requesting session.
+- **Audit every review** — both clean and suspicious reviews are logged. This ensures the audit trail shows that security review *occurred* for every write, not only blocked ones.
+
+### Notes for Piece 14.1 (Channel Adapter Base)
+
+- `MemorySecurityAgent` is now available; `AgentRuntime` can wire it in via a new constructor parameter if desired (not required for 14.1).
+- The `TYPE_CHECKING` guard in `memory.py` keeps import coupling loose — if `MemorySecurityAgent` is ever moved, only `memory.py` needs updating.
+- `audit.query(event_type=...)` is the correct kwarg (not `event=`); document this for future test authors.
+
+---
+
 ## Build Piece 0.1 — Project Structure and Dev Environment ✅
 
 **Status:** Complete — committed to `main`
