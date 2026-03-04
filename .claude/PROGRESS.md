@@ -340,3 +340,25 @@
 - Import `load_config`, `apply_profile` from `openrattler.config` for config loading in the CLI
 - `ChannelConfig` is the right model to use for the CLI channel entry in `config.channels["cli"]`
 - `DEFAULT_CONFIG_PATH` (`~/.openrattler/config.json`) should be the default for `openrattler init`
+
+### Piece 10.1 — Basic CLI Chat Interface (2026-03-04)
+
+**Files Created:**
+- `openrattler/cli/chat.py` — `CLIChat` with `open()`, `send()`, `start()`, `_handle_command()`; slash commands: /quit, /exit, /help, /session, /history [n], /audit [n]
+- `openrattler/cli/main.py` — `init_workspace()`, `list_sessions()`, argparse CLI with `init`, `chat`, `sessions list` subcommands
+- `openrattler/__main__.py` — `python -m openrattler` entry point
+- `tests/test_cli/test_init.py` — 13 tests for `init_workspace` and `list_sessions`
+- `tests/test_cli/test_chat.py` — 14 tests for `CLIChat` with mocked LLM provider
+
+**Test Results:** 606 passed, 1 skipped — full suite clean
+
+**Key Design Decisions:**
+- `CLIChat` accepts an optional injected `LLMProvider` so tests never touch a real API
+- `open()` does all async component initialisation; `send()` is the unit-testable message processor; `start()` is the production stdin loop
+- `CLI_SESSION_KEY = "agent:main:main"` is hardcoded — user input can never override the session routing
+- Provider auto-detected from `ANTHROPIC_API_KEY` then `OPENAI_API_KEY` env vars; `RuntimeError` if neither is set
+- `send()` always returns a printable string — error responses become `[Error: ...]` rather than raising
+- `Session.key` (not `session_key`) is the Pydantic field name on the `Session` model
+
+**Notes for Next Piece:**
+- The next build piece is 11.1 (check BUILD_GUIDE.md for details)
