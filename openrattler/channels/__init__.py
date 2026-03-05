@@ -7,4 +7,5 @@ Available adapters:
     CLIAdapter   — stdin/stdout (``openrattler.channels.cli_adapter``)
     EmailAdapter — IMAP polling + SMTP delivery (``openrattler.channels.email_adapter``)
     SMSAdapter   — Twilio REST API polling + delivery (``openrattler.channels.sms_adapter``)
+    SlackAdapter — Slack Web API polling + delivery (``openrattler.channels.slack_adapter``)
 """
