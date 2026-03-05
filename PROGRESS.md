@@ -1,5 +1,46 @@
 # OpenRattler — Build Progress
 
+## Build Piece 17.3 — Slack Channel Adapter ✅
+
+**Status:** Complete — on branch `build/17.3-slack-channel`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/channels/slack_adapter.py` — `SlackAdapter(ChannelAdapter)`: `connect`, `disconnect`, `receive`, `send`, `_fetch_new_messages`, `_is_valid_message`, `_build_universal_message`, `get_session_key`, `_audit_log`
+- `openrattler/channels/__init__.py` — updated docstring to mention `SlackAdapter`
+- `tests/test_channels/test_slack_adapter.py` — 35 tests across 8 test classes
+
+### Test Results
+
+```
+909 passed, 1 skipped in 12.98s  (35 new + 874 prior)
+```
+
+- `black --check .` — 104 files unchanged ✅
+- `mypy openrattler/` — no issues in 54 source files ✅
+- `pytest` — 909 collected (+1 skipped), 909 passed ✅
+
+### Design Decisions
+
+- **`_is_valid_message()` helper instead of inline filter**: The bot-message gating logic is complex enough to warrant its own method. It handles four cases cleanly: human message (accepted), bot message (accepted only when `allow_bot_messages=True`), system event (always rejected), human message with subtype (rejected as safest default). This also makes the filtering logic unit-testable without needing a live poll.
+- **`allow_bot_messages` config flag (default `False`)**: Extends the BUILD_GUIDE spec. By default only human user messages are delivered; when enabled, messages with a `bot_id` field are also accepted. The sender allowlist still applies — bot IDs must be explicitly listed. This supports team environments where OpenRattler agents need to interact with other bots without opening a security hole by default.
+- **`sender_id = user or bot_id` extraction**: `_build_universal_message` extracts the sender ID from whichever field is present (`user` for humans, `bot_id` for bots), unifying the downstream allowlist and session-key logic.
+- **Bearer token on session header, not URL/params**: `aiohttp.ClientSession(headers={"Authorization": f"Bearer {bot_token}"})` keeps the token off every individual request call and out of any logs that capture URL or params.
+- **`data["ok"]` check, not `raise_for_status()`**: Slack always returns HTTP 200 even for errors. The `"ok"` field is the authoritative success indicator in both `_fetch_new_messages()` and `send()`.
+- **`oldest` param bounds the poll window**: `_oldest_ts = str(datetime.now(timezone.utc).timestamp())` set in `connect()` ensures only messages from this session forward are fetched. This keeps response payloads small and prevents replaying pre-session history on reconnect.
+- **Error handling in `receive()`, not `_fetch_new_messages()`**: Matching the email/SMS adapter pattern — `receive()` wraps `_fetch_new_messages()` in a `try/except` and logs `slack_fetch_error`. `_fetch_new_messages` itself can raise freely (raises `RuntimeError` on `ok=False`). This design makes tests straightforward: patch `_fetch_new_messages` to raise, assert audit event written by `receive()`.
+- **`send()` error is `RuntimeError`, not `aiohttp.ClientResponseError`**: HTTP always 200 means `raise_for_status()` never fires for Slack errors. `RuntimeError` with the Slack `error` field message is the appropriate error type.
+- **`json=payload` for send, not `data=form`**: Slack `chat.postMessage` requires a JSON body (unlike Twilio which uses form encoding).
+
+### Notes for 17.4 (or next channel)
+
+- **`_seen_ts` is in-process memory**: A process restart will re-deliver messages received before the restart. For production, persist seen timestamps or use a `oldest` cutoff that advances with each successful delivery.
+- **No `mark as read` equivalent in Slack**: Unlike email (IMAP SEEN flag), Slack has no per-message read tracking via REST. Deduplication via `_seen_ts` is the only mechanism.
+- **`oldest` filter is timestamp-precise**: Unlike Twilio's date-granular `DateSent>` filter, Slack's `oldest` param accepts a full timestamp string (e.g. `"1234567890.123456"`), so messages sent before `connect()` within the same second are correctly excluded.
+- **Thread replies not fetched**: `conversations.history` returns only top-level messages. Fetching thread replies requires a separate `conversations.replies` call. Consider adding thread support in a future piece if needed.
+
+---
+
 ## Build Piece 17.2 — SMS Channel Adapter ✅
 
 **Status:** Complete — on branch `build/17.2-sms-channel`, PR pending review
