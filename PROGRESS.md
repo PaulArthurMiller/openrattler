@@ -1,5 +1,46 @@
 # OpenRattler — Build Progress
 
+## Build Piece 17.1 — Email Channel Adapter ✅
+
+**Status:** Complete — on branch `build/17.1-email-channel`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/channels/email_adapter.py` — `EmailAdapter(ChannelAdapter)`, `_fetch_unseen`, `_smtp_send`, `_extract_text`, `_strip_html`, `_TextExtractorParser`
+- `openrattler/channels/__init__.py` — updated docstring to mention `EmailAdapter`
+- `tests/test_channels/test_email_adapter.py` — 38 tests across 8 test classes
+
+### Test Results
+
+```
+841 passed, 1 skipped in 12.91s  (38 new + 803 prior)
+```
+
+- `black --check .` — 100 files unchanged ✅
+- `mypy openrattler/` — no issues in 52 source files ✅
+- `pytest` — 841 collected (+1 skipped), 841 passed ✅
+
+### Design Decisions
+
+- **Per-poll IMAP connections, not persistent**: `connect()` validates config and sets `_connected=True`; `disconnect()` clears it. Actual IMAP connections are opened and closed inside each `_fetch_unseen` call (via `asyncio.to_thread`). This avoids idle-timeout issues with IMAP servers while keeping the lifecycle API clean.
+- **Patch sync helpers, not `asyncio.to_thread`**: Tests that also need audit events to be written patch `_fetch_unseen` and `_smtp_send` directly (as sync mocks). Patching `asyncio.to_thread` globally would intercept the audit log's `_sync_append` write, producing false negatives in audit-related assertions.
+- **Fail-secure IMAP errors**: `receive()` catches any exception from `_fetch_unseen`, audit-logs it as `email_imap_error`, and treats it as "no messages". The loop continues on the next poll interval rather than propagating the error up and crashing the caller.
+- **SMTP errors propagated**: Unlike IMAP errors, SMTP delivery failures in `send()` propagate to the caller. The caller is responsible for deciding whether to retry, queue, or alert — the adapter doesn't silently swallow delivery failures.
+- **`_extract_text` prefers `text/plain`**: walks all MIME parts; takes the first `text/plain`, then falls back to `text/html` with `_strip_html`, then returns `"[no text content]"`. Attachments (non-text MIME parts) are silently skipped.
+- **`_strip_html` uses stdlib `HTMLParser`**: `_TextExtractorParser` tracks a `_skip` flag that goes `True` on `<script>` / `<style>` opening tags and `False` on the corresponding closing tags. No third-party dependency required.
+- **Subject stored as hash in audit log**: `send()` writes `subject_hash=sha256(subject)[:8]` to the audit event instead of the raw subject to limit sensitive data in audit logs.
+- **Session key is a SHA-256 hash fragment**: `get_session_key` derives `sha256(from_address)[:12]` — the raw address is never part of the session key, so it can't contain injection characters and doesn't need further sanitisation.
+
+### Notes for 17.2 (SMS Channel Adapter)
+
+- Follow the same pattern: `ChannelConfig.settings` carries all SMS-specific values (Twilio SID, auth token, phone numbers).
+- `sender_allowlist` equivalent for SMS would be an allowlist of phone number strings (normalized to E.164 format, e.g. `+15551234567`).
+- `asyncio.to_thread` wrapping for Twilio SDK calls (or use `httpx` async client directly).
+- Session key derivation: `sha256(phone_number)[:12]` — same pattern as email.
+- Test strategy: patch the Twilio client (or HTTP call) directly, not `asyncio.to_thread`, for the same reason as email.
+
+---
+
 ## Build Piece 16.1 — Human-in-the-Loop Approval System ✅
 
 **Status:** Complete — on branch `build/16.1-approval-system`, PR pending review
