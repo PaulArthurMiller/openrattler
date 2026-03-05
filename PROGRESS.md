@@ -1,5 +1,51 @@
 # OpenRattler — Build Progress
 
+## Build Piece 15.1 — Integration Tests ✅
+
+**Status:** Complete — on branch `build/15.1-integration-tests`, PR pending review
+
+### Files Created / Modified
+
+- `tests/conftest.py` — added `FullStack` dataclass, `make_text_response`, `make_tool_response`, `make_mock_provider` helpers, and `make_stack` fixture
+- `tests/test_integration/test_full_flow.py` — 10 tests across 5 test classes covering the complete message flow
+- `tests/test_integration/test_security_flow.py` — 11 tests across 5 test classes covering all security boundaries
+
+### Test Results
+
+```
+774 passed, 1 skipped in 6.70s  (21 new + 753 prior)
+```
+
+- `black .` — 1 file reformatted (test_full_flow.py), all others unchanged ✅
+- `mypy openrattler/` — no issues in 50 source files ✅
+- `pytest` — 774 collected (+1 skipped), 774 passed ✅
+
+### Coverage
+
+**test_full_flow.py** (10 tests):
+1. `TestTextMessageRoundTrip` — response returned, transcript has user+assistant entries, agent_turn audit event written
+2. `TestToolCallFlow` — tool executed and final response returned, successful tool_execution audit logged
+3. `TestToolPermissionDenied` — denied tool error fed back to LLM, denial audit logged with correct reason
+4. `TestSessionIsolation` — transcripts for two sessions never bleed content into each other
+5. `TestRateLimitTriggers` — RateLimiter blocks after threshold; independent keys don't interfere
+
+**test_security_flow.py** (11 tests):
+1. `TestTrustLevelEnforcement` — public-trust agent denied main-level tool; denial audit-logged with "trust level" in error
+2. `TestPathTraversalRejected` — `".."`, absolute path, and non-`agent:` prefix session keys all raise `ValueError`
+3. `TestTranscriptSessionIsolation` — unknown session returns empty transcript; two active sessions share no messages
+4. `TestMemorySecurityBlocking` — command injection pattern blocks write, blocked write leaves memory unchanged, clean write succeeds
+5. `TestSpawnLimitEnforcement` — second `create_agent` raises `SecurityError` after rate limit hit; denied spawn audit logged
+
+### Design Decisions
+
+- **`make_stack` factory pattern**: the `make_stack` fixture returns a callable factory so each test calls `make_stack(provider, ...)` and gets a completely isolated `FullStack` in `tmp_path` directories — no shared state between tests.
+- **`FullStack` dataclass**: exposes every component directly (`runtime`, `transcript_store`, `memory_store`, `audit_log`, `tool_registry`, `tool_executor`, `agent_config`) so tests can inspect state without re-wiring.
+- **Post-stack tool registration**: tools are registered on `stack.tool_registry` *after* calling `make_stack` — the shared registry reference between `ToolRegistry` and `ToolExecutor` means the tool is immediately available without rebuilding.
+- **Rate limit test uses `RateLimiter` directly**: no LLM calls needed; the component is tested in isolation which is faster and more reliable than wiring a full message loop.
+- **Spawn limit via `max_spawns_per_minute=1`**: the rate sliding window is the simplest limit to trigger reliably in tests (no registry counting edge cases); `_record_spawn` is called by `create_agent` after a successful spawn, so the second call sees `len(_spawn_times) >= 1` and raises.
+
+---
+
 ## Build Piece 14.1 — Channel Adapter Base and CLI Adapter ✅
 
 **Status:** Complete — on branch `build/14.1-channel-adapter-base`, PR pending review
