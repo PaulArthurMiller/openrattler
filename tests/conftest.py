@@ -46,9 +46,7 @@ def make_text_response(content: str) -> LLMResponse:
     )
 
 
-def make_tool_response(
-    tool_name: str, arguments: dict, call_id: str = "call-1"
-) -> LLMResponse:
+def make_tool_response(tool_name: str, arguments: dict, call_id: str = "call-1") -> LLMResponse:
     """Build a mock LLM response that requests a single tool call."""
     return LLMResponse(
         content="",
