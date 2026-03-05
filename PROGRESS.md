@@ -1,5 +1,45 @@
 # OpenRattler — Build Progress
 
+## Build Piece 14.1 — Channel Adapter Base and CLI Adapter ✅
+
+**Status:** Complete — on branch `build/14.1-channel-adapter-base`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/channels/__init__.py` — updated package docstring
+- `openrattler/channels/base.py` — `ChannelAdapter` ABC: `channel_name`, `connect`, `disconnect`, `receive`, `send`, `get_session_key`
+- `openrattler/channels/cli_adapter.py` — `CLIAdapter(ChannelAdapter)`: stdin/stdout with `text_to_message`, `_format_response`, `_read_line`
+- `openrattler/cli/chat.py` — refactored: imports `CLIAdapter`, constructs `self._adapter` in `__init__`, `send()` uses `adapter.text_to_message` + `adapter._format_response`, `start()` uses `adapter.receive()` / `adapter.send()`
+- `tests/test_channels/__init__.py` — new test package
+- `tests/test_channels/test_cli_adapter.py` — 26 tests across 5 test classes
+
+### Test Results
+
+```
+753 passed, 1 skipped in 27.34s  (26 new + 727 prior)
+```
+
+- `black --check .` — 94 files unchanged ✅
+- `mypy openrattler/` — no issues in 50 source files ✅
+- `pytest` — 753 collected (+1 skipped), 753 passed ✅
+
+### Design Decisions
+
+- **`text_to_message` is public** (not `_text_to_message`) — it's the canonical way to create a CLI inbound message and tests + `CLIChat` use it directly; exposing it keeps the API clean without blocking I/O.
+- **`_format_response` is a static helper** — it takes a `UniversalMessage` and returns a printable string; this keeps `send()` thin and makes the formatting logic independently testable.
+- **`receive()` uses `run_in_executor`** — keeps the event loop non-blocking; `_read_line` is the synchronous step so it can be patched in tests without importing asyncio internals.
+- **`get_session_key` ignores `peer_info`** — the CLI has exactly one session (`agent:main:main`); ignoring peer_info is intentional and documented as a security note.
+- **`start()` uses `connect()`/`disconnect()` lifecycle** — even though they're no-ops for CLI, using them sets the pattern all future channel adapters will follow.
+- **`chat.py` refactoring is minimal** — only the message construction and formatting moved into the adapter; `CLIChat`'s component wiring, slash commands, and open/close logic are unchanged.
+
+### Notes for Piece 15.1 (Integration Tests)
+
+- `CLIAdapter.text_to_message(text)` is the standard way to inject CLI messages in integration tests.
+- `CLIAdapter` can be subclassed or replaced by a test double that returns pre-canned messages via `receive()`.
+- `create_response` requires explicit `from_agent` and `trust_level` args (not inferred from the original message) — test helpers must supply them.
+
+---
+
 ## Build Piece 13.1 — Memory Security Agent ✅
 
 **Status:** Complete — on branch `build/13.1-memory-security-agent`, PR pending review

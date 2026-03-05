@@ -44,9 +44,9 @@ from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.providers.anthropic_provider import AnthropicProvider
 from openrattler.agents.providers.openai_provider import OpenAIProvider
 from openrattler.agents.runtime import AgentRuntime
+from openrattler.channels.cli_adapter import CLIAdapter
 from openrattler.config.loader import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from openrattler.models.agents import AgentConfig, TrustLevel
-from openrattler.models.messages import create_message
 from openrattler.models.sessions import Session
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
@@ -175,6 +175,7 @@ class CLIChat:
         self._runtime: Optional[AgentRuntime] = None
         self._session: Optional[Session] = None
         self._audit_log: Optional[AuditLog] = None
+        self._adapter: CLIAdapter = CLIAdapter()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -249,22 +250,9 @@ class CLIChat:
         if self._runtime is None or self._session is None:
             raise RuntimeError("CLIChat.open() must be called before send()")
 
-        user_msg = create_message(
-            from_agent="channel:cli",
-            to_agent=CLI_SESSION_KEY,
-            session_key=CLI_SESSION_KEY,
-            type="request",
-            operation="user_message",
-            trust_level="main",
-            params={"content": text},
-        )
+        user_msg = self._adapter.text_to_message(text)
         response = await self._runtime.process_message(self._session, user_msg)
-
-        if response.type == "response":
-            return str(response.params.get("content", ""))
-        # Error response — return a readable string rather than raising
-        error = response.error or {}
-        return f"[Error: {error.get('message', 'unknown error')}]"
+        return self._adapter._format_response(response)
 
     # ------------------------------------------------------------------
     # Interactive loop
@@ -274,28 +262,36 @@ class CLIChat:
         """Run the full interactive chat loop.
 
         Initialises all components via ``open()``, then loops reading lines
-        from stdin until the user types ``/quit`` or presses Ctrl+C / Ctrl+D.
+        from stdin (via CLIAdapter) until the user types ``/quit`` or presses
+        Ctrl+C / Ctrl+D.
         """
         await self.open()
+        assert self._runtime is not None
+        assert self._session is not None
+        await self._adapter.connect()
         print("OpenRattler CLI — type /help for commands, /quit to exit.\n")
 
-        while True:
-            try:
-                text = input("You: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nGoodbye!")
-                break
-
-            if not text:
-                continue
-
-            if text.startswith("/"):
-                if await self._handle_command(text) == "quit":
+        try:
+            while True:
+                try:
+                    msg = await self._adapter.receive()
+                except (EOFError, KeyboardInterrupt):
+                    print("\nGoodbye!")
                     break
-                continue
 
-            response = await self.send(text)
-            print(f"Assistant: {response}\n")
+                text = msg.params.get("content", "").strip()
+                if not text:
+                    continue
+
+                if text.startswith("/"):
+                    if await self._handle_command(text) == "quit":
+                        break
+                    continue
+
+                response = await self._runtime.process_message(self._session, msg)
+                await self._adapter.send(response)
+        finally:
+            await self._adapter.disconnect()
 
     # ------------------------------------------------------------------
     # Slash-command handler
