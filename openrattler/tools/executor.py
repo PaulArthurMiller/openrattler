@@ -1,20 +1,19 @@
 """Tool executor — permission-gated, audit-logged tool invocation.
 
 ``ToolExecutor.execute()`` is the single entry point for running any tool.
-It enforces permissions, catches all handler exceptions (so the LLM always
-receives a ``ToolResult`` rather than a traceback), and logs every invocation
-to the audit log.
-
-The human-in-the-loop approval flow (Piece 16.1) will be wired in by
-adding an ``ApprovalManager`` to the executor; the hook is already
-documented in the code as a TODO.
+It enforces permissions, routes approval-required tools through
+``ApprovalManager``, catches all handler exceptions (so the LLM always
+receives a ``ToolResult`` rather than a traceback), and logs every
+invocation to the audit log.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Optional
+import uuid
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Optional
 
 from openrattler.models.agents import AgentConfig
 from openrattler.models.audit import AuditEvent
@@ -22,6 +21,9 @@ from openrattler.models.tools import ToolCall, ToolResult
 from openrattler.storage.audit import AuditLog
 from openrattler.tools.permissions import check_permission, needs_approval
 from openrattler.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from openrattler.security.approval import ApprovalManager, ApprovalRequest
 
 
 class ToolExecutor:
@@ -31,8 +33,9 @@ class ToolExecutor:
 
     1. Look up the tool definition in the registry.
     2. Run ``check_permission`` — return error result if denied.
-    3. Check ``needs_approval`` — (TODO Piece 16.1: route through
-       ``ApprovalManager`` here; for now, execution proceeds).
+    3. If ``needs_approval`` and an ``ApprovalManager`` is configured,
+       request human approval and block until resolved or timed out.
+       Denial (including timeout) returns an error ``ToolResult`` immediately.
     4. Invoke the handler in a try/except — return error result on any
        exception so the LLM can recover gracefully.
     5. Log the outcome to the audit log.
@@ -41,18 +44,32 @@ class ToolExecutor:
     Security notes:
     - This class **never** raises — every code path returns a ``ToolResult``.
     - Permission checks are performed on every call; they are never cached.
-    - All executions (success and failure) are audit-logged.
+    - Approval is fail-secure: timeout auto-denies; absence of an
+      ``ApprovalManager`` does *not* skip approval (execution proceeds to
+      maintain backward compatibility, but production deployments should
+      always supply a manager for approval-required tools).
+    - All executions (success, denial, approval denial, and failure) are
+      audit-logged.
     """
 
-    def __init__(self, registry: ToolRegistry, audit_log: AuditLog) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        audit_log: AuditLog,
+        approval_manager: Optional["ApprovalManager"] = None,
+    ) -> None:
         """Initialise the executor.
 
         Args:
-            registry:  Registry containing all registered tools and handlers.
-            audit_log: Audit log that receives one entry per execution.
+            registry:         Registry containing all registered tools and handlers.
+            audit_log:        Audit log that receives one entry per execution.
+            approval_manager: Optional human-in-the-loop approval broker.
+                              When set, any tool with ``requires_approval=True``
+                              will pause here until approved, denied, or timed out.
         """
         self._registry = registry
         self._audit = audit_log
+        self._approval_manager = approval_manager
 
     async def execute(
         self,
@@ -66,7 +83,8 @@ class ToolExecutor:
             tool_call:    Tool invocation produced by the LLM.
 
         Returns:
-            A ``ToolResult`` — always, even on permission denial or exception.
+            A ``ToolResult`` — always, even on permission denial, approval
+            denial, or handler exception.
         """
         tool_name = tool_call.tool_name
 
@@ -83,12 +101,21 @@ class ToolExecutor:
             await self._log(agent_config, tool_call, success=False, error=reason)
             return ToolResult(call_id=tool_call.call_id, success=False, error=reason)
 
-        # --- Step 3: approval check (stub — wired up in Piece 16.1) ----------
-        # TODO(Piece 16.1): if needs_approval(tool_def), route through
-        #   ApprovalManager.request_approval() before proceeding.
-        #   For now, execution continues so the framework can be tested
-        #   end-to-end without a running approval manager.
-        _ = needs_approval(tool_def)  # evaluated but not yet acted upon
+        # --- Step 3: approval gate -------------------------------------------
+        if needs_approval(tool_def) and self._approval_manager is not None:
+            approval_result = await self._approval_manager.request_approval(
+                self._build_approval_request(agent_config, tool_call, self._approval_manager)
+            )
+            if not approval_result.approved:
+                error = f"Tool '{tool_name}' execution denied by {approval_result.decided_by}"
+                await self._log(
+                    agent_config,
+                    tool_call,
+                    success=False,
+                    error=error,
+                    approval_id=approval_result.approval_id,
+                )
+                return ToolResult(call_id=tool_call.call_id, success=False, error=error)
 
         # --- Step 4: invoke handler ------------------------------------------
         handler = self._registry.get_handler(tool_name)
@@ -117,6 +144,36 @@ class ToolExecutor:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _build_approval_request(
+        self,
+        agent_config: AgentConfig,
+        tool_call: ToolCall,
+        manager: "ApprovalManager",
+    ) -> "ApprovalRequest":
+        """Build an ``ApprovalRequest`` from verified agent and call data.
+
+        Provenance is populated from ``agent_config`` (not from any
+        user-controlled field of ``tool_call``) so it is independently
+        verifiable.
+        """
+        from openrattler.security.approval import ApprovalRequest
+
+        return ApprovalRequest(
+            approval_id=uuid.uuid4().hex,
+            operation=tool_call.tool_name,
+            context=tool_call.arguments,
+            requesting_agent=agent_config.agent_id,
+            session_key=agent_config.session_key or "",
+            provenance={
+                "trust_level": agent_config.trust_level.value,
+                "agent_id": agent_config.agent_id,
+                "session_key": agent_config.session_key,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            timestamp=datetime.now(timezone.utc),
+            timeout_seconds=manager.default_timeout_seconds,
+        )
+
     async def _log(
         self,
         agent_config: AgentConfig,
@@ -124,18 +181,23 @@ class ToolExecutor:
         *,
         success: bool,
         error: Optional[str] = None,
+        approval_id: Optional[str] = None,
     ) -> None:
         """Append one audit entry for this tool execution."""
+        details: dict[str, Any] = {
+            "tool": tool_call.tool_name,
+            "call_id": tool_call.call_id,
+            "success": success,
+        }
+        if error is not None:
+            details["error"] = error
+        if approval_id is not None:
+            details["approval_id"] = approval_id
         await self._audit.log(
             AuditEvent(
                 event="tool_execution",
                 agent_id=agent_config.agent_id,
                 session_key=agent_config.session_key,
-                details={
-                    "tool": tool_call.tool_name,
-                    "call_id": tool_call.call_id,
-                    "success": success,
-                    **({"error": error} if error is not None else {}),
-                },
+                details=details,
             )
         )

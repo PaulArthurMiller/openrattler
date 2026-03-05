@@ -1,5 +1,38 @@
 # OpenRattler — Build Progress
 
+## Build Piece 16.1 — Human-in-the-Loop Approval System ✅
+
+**Status:** Complete — on branch `build/16.1-approval-system`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/security/approval.py` — `ApprovalRequest` model, `ApprovalResult` model, `ApprovalManager` class, `CLIApprovalHandler` class
+- `openrattler/tools/executor.py` — wired `ApprovalManager` into `ToolExecutor`; Step 3 now routes approval-required tools through the manager
+- `tests/test_security/test_approval.py` — 29 tests across 8 test classes
+
+### Test Results
+
+```
+803 passed, 1 skipped in 12.75s  (29 new + 774 prior)
+```
+
+- `black .` — all files unchanged ✅
+- `mypy openrattler/` — no issues in 51 source files ✅
+- `pytest` — 803 collected (+1 skipped), 803 passed ✅
+
+### Design Decisions
+
+- **Fail-secure timeout**: `asyncio.wait_for(event.wait(), timeout=...)` auto-denies on expiry. The timeout always results in denial — never in permission.
+- **`asyncio.Event` per request**: `request_approval` awaits a per-`approval_id` event. `resolve()` sets it, unblocking the waiter. This keeps concurrency simple — multiple approvals can run simultaneously with no shared state between them.
+- **Race prevention via `_decided` set**: if a handler calls `resolve` after a timeout has already auto-denied, `resolve` silently no-ops rather than raising. The set is checked before accessing `_pending` so the window is O(1).
+- **Provenance from `AgentConfig`, never from tool arguments**: `_build_approval_request` takes the `AgentConfig` and extracts `trust_level`, `agent_id`, `session_key`, and a UTC timestamp into the `provenance` dict. The agent cannot spoof these values.
+- **Backward-compatible executor**: `approval_manager` is `Optional` with default `None`. When `None`, a tool with `requires_approval=True` still executes (matching the previous stub behaviour). Production deployments should always supply a manager.
+- **`CLIApprovalHandler._read_input` is a static method**: makes it patchable in tests without blocking on stdin (same pattern as `CLIAdapter._read_line`).
+- **`_build_approval_request` takes manager explicitly**: avoids a `union-attr` mypy error; the manager is always non-None at the call site but mypy cannot prove that through the method boundary.
+- **Audit trail covers both request and resolution**: `approval_requested` and `approval_resolved` events are always written, even on timeout, so the full decision history is reconstructible.
+
+---
+
 ## Build Piece 15.1 — Integration Tests ✅
 
 **Status:** Complete — on branch `build/15.1-integration-tests`, PR pending review
