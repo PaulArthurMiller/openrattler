@@ -1,5 +1,43 @@
 # OpenRattler — Build Progress
 
+## Build Piece 17.2 — SMS Channel Adapter ✅
+
+**Status:** Complete — on branch `build/17.2-sms-channel`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/channels/sms_adapter.py` — `SMSAdapter(ChannelAdapter)`: `connect`, `disconnect`, `receive`, `send`, `_fetch_new_sms`, `_build_universal_message`, `get_session_key`, `_audit_log`
+- `openrattler/channels/__init__.py` — updated docstring to mention `SMSAdapter`
+- `tests/test_channels/test_sms_adapter.py` — 33 tests across 8 test classes
+
+### Test Results
+
+```
+874 passed, 1 skipped in 12.86s  (33 new + 841 prior)
+```
+
+- `black --check .` — 102 files unchanged ✅
+- `mypy openrattler/` — no issues in 53 source files ✅
+- `pytest` — 874 collected (+1 skipped), 874 passed ✅
+
+### Design Decisions
+
+- **Persistent `aiohttp.ClientSession`, not per-poll**: `connect()` creates one `ClientSession` with `BasicAuth(account_sid, auth_token)` and `ClientTimeout(total=30)`. The session persists until `disconnect()`, unlike `EmailAdapter`'s per-poll IMAP connections. This is appropriate because Twilio's REST API doesn't have idle-timeout issues.
+- **Error handling in `receive()`, not `_fetch_new_sms()`**: Matching the email adapter pattern — `receive()` wraps `_fetch_new_sms()` in a `try/except` and logs `sms_fetch_error`. `_fetch_new_sms` itself can raise freely. This design makes tests straightforward: patch `_fetch_new_sms` to raise, assert audit event written by `receive()`.
+- **`_seen_sids` for deduplication**: Twilio has no "mark as read" equivalent for the Messages API, so the adapter tracks delivered SIDs in process memory. The set is reset on every `connect()` call, which is acceptable since a reconnect implies a new session.
+- **SID marked seen before rate-limit check**: `_seen_sids.add(sid)` happens after the allowlist check but before the rate-limit check. This prevents re-delivery of a rate-limited message on the next poll (which could flood logs). A rate-limited message is effectively discarded for the session.
+- **`DateSent>=` query param bounds the result set**: polling uses `DateSent>={YYYY-MM-DD}` (the connection date) so Twilio returns only messages from the current session window, keeping response payloads small.
+- **`auth_token` only in `BasicAuth` on the session**: never passed as a URL parameter, query string, or audit detail. The session's `BasicAuth` handles HTTPS Basic Auth entirely inside `aiohttp`.
+- **Send errors propagated**: HTTP failures in `send()` propagate to the caller — the adapter never silently swallows delivery failures.
+
+### Notes for 17.3 (or next channel)
+
+- Consider adding an optional `max_message_length` setting to `SMSAdapter.send()` to guard against Twilio's 1600-character SMS limit.
+- `_seen_sids` is in-process memory — a process restart will re-deliver messages received before the restart. For production, persist seen SIDs to a fast store (Redis, SQLite) or rely on a `DateSent>=` cutoff that advances with each successful delivery.
+- `DateSent>` Twilio filter parameter is date-granular (not datetime), so messages from the same day sent before `connect()` but not yet seen will be re-fetched until their SIDs are in `_seen_sids`.
+
+---
+
 ## Build Piece 17.1 — Email Channel Adapter ✅
 
 **Status:** Complete — on branch `build/17.1-email-channel`, PR pending review
