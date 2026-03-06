@@ -1,5 +1,36 @@
 # OpenRattler — Build Progress
 
+## Build Piece MCP-B — MCP Server Connection Layer ✅
+
+**Status:** Complete — on branch `build/mcp-server-connection`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/mcp/connection.py` — `MCPServerConnection`: `connect`, `disconnect`, `list_tools`, `call_tool`, `_run_stdio`, `_run_http`, `_build_safe_env`
+- `tests/test_mcp/__init__.py` — new test package
+- `tests/test_mcp/test_connection.py` — 34 tests across 6 test classes
+
+### Test Results
+
+```
+994 passed, 1 skipped in 14.35s  (34 new + 960 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues in 56 source files ✅
+- `pytest` — 994 collected (+1 skipped), 994 passed ✅
+
+### Design Decisions
+
+- **Background task (`_run_stdio` / `_run_http`) holds context managers open**: The MCP SDK uses `async with` context managers for both transports. By running the `async with` block in a background `asyncio.Task`, we can expose `connect()` / `disconnect()` as clean method boundaries while keeping the context managers alive across the connection lifetime. `asyncio.Event` (`_initialized`, `_disconnect_event`) coordinates the lifecycle.
+- **`asyncio.wait_for` on `_initialized.wait()` for connect timeout**: If the SDK handshake hangs, we cancel the background task (propagating `CancelledError` into the SDK's context managers for clean teardown) and raise `TimeoutError` to the caller.
+- **Exception isolation in `_run_*`**: `except Exception` (not `BaseException`) catches SDK errors and stores them in `_init_error` for re-raising as `ConnectionError` from `connect()`. `CancelledError` (a `BaseException` in Python 3.8+) propagates through the except clause cleanly to the task's cancellation handler.
+- **`_build_safe_env` starts from an allowlist, not a denylist**: The subprocess inherits only 11 named vars from the parent environment. Everything else — including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DATABASE_PASSWORD` — is stripped. Manifest-declared vars are then overlaid.
+- **`AsyncMock(side_effect=lambda: coroutine)` does NOT await the coroutine**: Discovered during testing. When `side_effect` is a regular (non-async) function, `AsyncMock` calls it and returns the result as the mock's return value — it does NOT check if the result is a coroutine and await it. Use `async def` side-effects or delay in the transport context manager instead.
+- **`call_tool` timeout via `asyncio.wait_for`**: Wraps the session call with the connection's global `_timeout`. On timeout, `asyncio.TimeoutError` is caught and re-raised as `TimeoutError` with a descriptive message. The underlying session may be in an indeterminate state after timeout — callers should `disconnect()` if they hit this.
+
+---
+
 ## Build Piece MCP-A — MCP Models and Configuration ✅
 
 **Status:** Complete — merged via PR #24
