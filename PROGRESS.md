@@ -1,5 +1,36 @@
 # OpenRattler — Build Progress
 
+## Build Piece MCP-C — MCP Manager (Registry and Lifecycle) ✅
+
+**Status:** Complete — on branch `build/mcp-manager`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/mcp/manager.py` — `MCPManager`: `load_manifest`, `load_manifests_from_directory`, `connect_server`, `disconnect_server`, `connect_all_bundled`, `disconnect_all`, `get_connection`, `get_manifest`, `list_servers`, `_cross_validate_tools`, `_register_mcp_tools`, `_audit_log`
+- `openrattler/tools/registry.py` — `register` handler made `Optional`; `unregister()` method added
+- `tests/test_mcp/test_manager.py` — 40 tests across 6 test classes
+
+### Test Results
+
+```
+1034 passed, 1 skipped in 15.13s  (40 new + 994 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues in 57 source files ✅
+- `pytest` — 1034 collected (+1 skipped), 1034 passed ✅
+
+### Design Decisions
+
+- **`ToolRegistry.register` handler made `Optional[Callable]`**: MCP tools register with `handler=None` because `MCPToolBridge` (Build Piece D) routes execution through `MCPServerConnection` rather than a local Python callable. The `ToolExecutor` already handles `handler is None` gracefully — MCP tools take a different execution path.
+- **`ToolRegistry.unregister(name)`**: New method to remove tools on disconnect. Tracks which tools belong to each server via `_registered_tools: dict[str, list[str]]` so cleanup is O(n) in tool count with no stale entries.
+- **Trust-tier enforcement at `load_manifest` time**: Permission checks are done when manifests are registered, not at connect time. This separates policy enforcement from transport lifecycle.
+- **Cross-validation per trust tier**: Undeclared tools on `auto_discovered` servers are filtered entirely; on `user_installed` servers they're registered with `requires_approval=True` forced; on `bundled` servers they're logged as warning but allowed. Tools in the manifest but absent from the server are logged as info only (optional tools are valid).
+- **Undeclared tools always default to `requires_approval=True`**: Defence-in-depth. If a server reports a tool that wasn't declared in the manifest, the safest assumption is that it needs a human in the loop.
+- **`MCPServerConnection` patched at manager module level in tests**: Since Piece B tests cover the connection layer, Piece C tests mock `MCPServerConnection` entirely to isolate manager logic. This keeps tests fast, deterministic, and focused.
+
+---
+
 ## Build Piece MCP-B — MCP Server Connection Layer ✅
 
 **Status:** Complete — on branch `build/mcp-server-connection`, PR pending review

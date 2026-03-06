@@ -86,17 +86,32 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
-        self._handlers: dict[str, Callable[..., Any]] = {}
+        self._handlers: dict[str, Optional[Callable[..., Any]]] = {}
 
-    def register(self, tool: ToolDefinition, handler: Callable[..., Any]) -> None:
+    def register(
+        self,
+        tool: ToolDefinition,
+        handler: Optional[Callable[..., Any]] = None,
+    ) -> None:
         """Register *tool* and its *handler* callable.
 
         Args:
             tool:    Metadata describing the tool.
             handler: Async or sync callable that implements the tool.
+                     May be ``None`` for MCP tools — MCPToolBridge handles
+                     execution for those by routing through MCPServerConnection
+                     rather than a local Python handler.
         """
         self._tools[tool.name] = tool
         self._handlers[tool.name] = handler
+
+    def unregister(self, name: str) -> None:
+        """Remove a tool and its handler from the registry.
+
+        No-op if *name* is not registered.
+        """
+        self._tools.pop(name, None)
+        self._handlers.pop(name, None)
 
     def get(self, name: str) -> Optional[ToolDefinition]:
         """Return the ``ToolDefinition`` for *name*, or ``None`` if not found."""
