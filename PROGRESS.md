@@ -1,5 +1,38 @@
 # OpenRattler — Build Progress
 
+## Build Piece SS-A — Social Secretary Models ✅
+
+**Status:** Complete — on branch `build/social-secretary-models`, PR pending review
+
+### Files Created
+
+- `openrattler/models/social.py` — All Social Secretary data models:
+  - `SocialAlert` — single flagged event for main to surface; confidence bounds, Literal event_type/urgency/etc.
+  - `ContactEntry` — person record with relevant_details, social_ids, attention_level
+  - `LearningObservation` — open question for main to resolve; lifecycle open→resolved→archived
+  - `SocialSecretaryConfig` — processor config with cycle_interval_minutes (ge=15), security_profile Literal
+  - `AlertQueue`, `ContactsStore`, `LearningQueue` — JSON-backed container models
+- `tests/test_models/test_social.py` — 68 tests across 7 test classes
+
+### Test Results
+
+```
+1165 passed, 1 skipped in 38.79s  (68 new + 1097 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/models/social.py` — no issues ✅
+- `pytest` — 1165 collected (+1 skipped), 1165 passed ✅
+
+### Design Decisions
+
+- **JSON storage, not UniversalMessage**: Alerts, contacts, and observations are persistent state (accumulating, acknowledged over time) — not in-flight messages. The build guide explicitly confirms this split.
+- **All constrained strings use `Literal` types**: Pydantic rejects invalid values at model construction, before they can reach storage or the LLM.
+- **`cycle_interval_minutes ge=15`**: Enforced at the model level to prevent runaway API usage regardless of how the config is loaded.
+- **`SocialAlert.raw_reference_id`**: Stores only the platform post ID (not content) — consistent with the security principle that raw social media content never persists past the evaluation cycle.
+
+---
+
 ## Build Piece MCP-E — Integration and Bundled Servers ✅
 
 **Status:** Complete — on branch `build/mcp-integration`, PR pending review
