@@ -1,5 +1,39 @@
 # OpenRattler — Build Progress
 
+## Build Piece MCP-A — MCP Models and Configuration ✅
+
+**Status:** Complete — merged via PR #24
+
+### Files Created / Modified
+
+- `openrattler/models/mcp.py` — All MCP Pydantic models: `MCPTrustTier`, `MCPNetworkPermissions`, `MCPDataAccessPermissions`, `MCPFileSystemPermissions`, `MCPToolManifestEntry`, `MCPPermissions`, `MCPServerManifest`, `MCPSecurityConfig`, `MCPCallRecord`
+- `openrattler/models/__init__.py` — exports added for all 9 new MCP types
+- `openrattler/mcp/__init__.py` — package docstring with architecture overview
+- `tests/test_models/test_mcp.py` — 51 tests across 5 test classes
+- `pyproject.toml` — added `mcp>=1.2.0` dependency
+
+### Test Results
+
+```
+960 passed, 1 skipped in 13.42s  (51 new + 909 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues in 55 source files ✅
+- `pytest` — 960 collected (+1 skipped), 960 passed ✅
+
+### Design Decisions
+
+- **`server_id` regex `^[a-z0-9][a-z0-9_-]*$`**: Restricts to lowercase alphanumerics, hyphens, underscores — keeping it safe for use in `mcp:{server_id}.{tool_name}` prefixes and audit log fields without quoting or escaping concerns. No dots (would collide with tool name separator), no spaces.
+- **Defaults are maximally restrictive**: `MCPPermissions` defaults all allowlists to empty, `exec=False`, `financial=False`, `max_cost_per_transaction=None`. Capabilities must be explicitly declared in the manifest — nothing is assumed.
+- **`MCPCallRecord.params_keys` stores keys only**: Tool argument values (which may include API keys, addresses, payment tokens) never appear in audit records. Callers are responsible for passing `list(args.keys())`.
+- **`MCPSecurityConfig.call_timeout_seconds` bounded `[5, 300]`**: Prevents both spin-loops on misconfiguration (too short) and indefinite hangs (too long). 5s is the minimum meaningful timeout for network round-trips; 300s covers legitimate long-running operations.
+- **`MCPNetworkPermissions.allow_domains` path-char validator**: Domain entries containing `/` or `\` are rejected at construction time — a domain is a hostname, not a URL.
+- **`MCPSecurityConfig.allow_auto_discovered` defaults to `"deny"`**: Auto-discovered servers are the highest risk (no prior user review). Safe default is to block them; users must explicitly opt-in to `"prompt"` or `"allow"`.
+
+---
+
+
 ## Build Piece 17.3 — Slack Channel Adapter ✅
 
 **Status:** Complete — on branch `build/17.3-slack-channel`, PR pending review

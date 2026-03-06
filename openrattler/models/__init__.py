@@ -1,5 +1,16 @@
 """OpenRattler data models."""
 
+from openrattler.models.mcp import (
+    MCPCallRecord,
+    MCPDataAccessPermissions,
+    MCPFileSystemPermissions,
+    MCPNetworkPermissions,
+    MCPPermissions,
+    MCPSecurityConfig,
+    MCPServerManifest,
+    MCPToolManifestEntry,
+    MCPTrustTier,
+)
 from openrattler.models.agents import (
     AgentConfig,
     AgentCreationRequest,
@@ -42,4 +53,14 @@ __all__ = [
     "ToolResult",
     # audit
     "AuditEvent",
+    # mcp
+    "MCPTrustTier",
+    "MCPNetworkPermissions",
+    "MCPDataAccessPermissions",
+    "MCPFileSystemPermissions",
+    "MCPToolManifestEntry",
+    "MCPPermissions",
+    "MCPServerManifest",
+    "MCPSecurityConfig",
+    "MCPCallRecord",
 ]
