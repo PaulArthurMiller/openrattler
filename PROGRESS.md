@@ -1,5 +1,45 @@
 # OpenRattler — Build Progress
 
+## Build Piece SS-C — Social Secretary Processor Engine ✅
+
+**Status:** Complete — on branch `build/social-secretary-processor`, PR pending review
+
+### Files Created
+
+- `openrattler/processors/__init__.py` — Package docstring establishing "proactive processor" component type
+- `openrattler/processors/base.py` — `ProactiveProcessor` ABC (4 abstract methods: `processor_name`, `connect`, `disconnect`, `run_cycle`, `get_pending_output`)
+- `openrattler/processors/social_secretary.py` — `SocialSecretaryProcessor` full implementation:
+  - Active hours check (skip if outside configured window)
+  - `_fetch_feed` — `MCPManager.get_connection(platform).call_tool("get_feed", {})`
+  - `_sanitise_item` — truncate, strip HTML, strip URLs/mentions, suspicious content scan (audit-log only)
+  - `_evaluate_item` — focused LLM call (no tools), JSON parse, confidence threshold (≥0.3)
+  - `_enrich_contacts` — update known contacts, create entry for unknown alerting posters
+  - Alert cap per cycle via `max_alerts_per_cycle`
+  - `<social_post>` delimiters around all social content in LLM prompt
+  - Markdown code fence stripping for robustness
+- `tests/test_processors/__init__.py` — empty
+- `tests/test_processors/test_social_secretary.py` — 47 tests across 7 test classes
+
+### Test Results
+
+```
+1261 passed, 1 skipped in 39.60s  (47 new + 1214 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/processors/` — no issues ✅
+- `pytest` — 1261 collected (+1 skipped), 1261 passed ✅
+
+### Design Decisions
+
+- **`MCPManager` as MCP interface** (not a separate `MCPSandbox` class): The build guide's `MCPSandbox` is aspirational; `MCPManager.get_connection()` provides the same access pattern and is what we have. The Social Secretary calls `connection.call_tool("get_feed", {})` directly — bypassing `MCPToolBridge` is intentional since the SS has its own permission model.
+- **LLM calls with `tools=None`**: Enforced in `_evaluate_item` — no tool access whatsoever during evaluation. Pure text-in, text-out.
+- **Confidence threshold `_MIN_CONFIDENCE = 0.3`**: Alerts below this are discarded silently. The LLM sets confidence; low-confidence responses indicate uncertainty about relevance.
+- **Suspicious content is logged, not blocked**: The attacker receives no signal that detection occurred. The sanitised text still reaches the LLM for evaluation (wrapped in delimiters for injection resistance).
+- **`max_post_length_chars` minimum is 100** (enforced by `SocialSecretaryConfig`): Tests updated to respect this bound.
+
+---
+
 ## Build Piece SS-B — Social Secretary Storage Layer ✅
 
 **Status:** Complete — on branch `build/social-secretary-storage`, PR pending review
