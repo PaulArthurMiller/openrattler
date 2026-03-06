@@ -23,6 +23,7 @@ from openrattler.tools.permissions import check_permission, needs_approval
 from openrattler.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from openrattler.mcp.bridge import MCPToolBridge
     from openrattler.security.approval import ApprovalManager, ApprovalRequest
 
 
@@ -57,6 +58,7 @@ class ToolExecutor:
         registry: ToolRegistry,
         audit_log: AuditLog,
         approval_manager: Optional["ApprovalManager"] = None,
+        mcp_bridge: Optional["MCPToolBridge"] = None,
     ) -> None:
         """Initialise the executor.
 
@@ -66,10 +68,14 @@ class ToolExecutor:
             approval_manager: Optional human-in-the-loop approval broker.
                               When set, any tool with ``requires_approval=True``
                               will pause here until approved, denied, or timed out.
+            mcp_bridge:       Optional MCP security bridge.  When set, tool calls
+                              whose name starts with ``mcp:`` are routed to the
+                              bridge instead of a local Python handler.
         """
         self._registry = registry
         self._audit = audit_log
         self._approval_manager = approval_manager
+        self._mcp_bridge = mcp_bridge
 
     async def execute(
         self,
@@ -100,6 +106,34 @@ class ToolExecutor:
         if not allowed:
             await self._log(agent_config, tool_call, success=False, error=reason)
             return ToolResult(call_id=tool_call.call_id, success=False, error=reason)
+
+        # --- Step 2b: MCP routing --------------------------------------------
+        # MCP tools (name starts with "mcp:") are delegated to MCPToolBridge,
+        # which runs its own approval gate and audit logging internally.
+        if tool_name.startswith("mcp:") and self._mcp_bridge is not None:
+            _, remainder = tool_name.split(":", 1)
+            server_id, mcp_tool_name = remainder.split(".", 1)
+            trace_id = uuid.uuid4().hex
+            try:
+                bridge_result = await self._mcp_bridge.execute(
+                    server_id=server_id,
+                    tool_name=mcp_tool_name,
+                    params=tool_call.arguments,
+                    agent_config=agent_config,
+                    session_key=agent_config.session_key or "",
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                error = str(exc) or type(exc).__name__
+                await self._log(agent_config, tool_call, success=False, error=error)
+                return ToolResult(call_id=tool_call.call_id, success=False, error=error)
+            await self._log(
+                agent_config,
+                tool_call,
+                success=bridge_result.success,
+                error=bridge_result.error,
+            )
+            return bridge_result
 
         # --- Step 3: approval gate -------------------------------------------
         if needs_approval(tool_def) and self._approval_manager is not None:
