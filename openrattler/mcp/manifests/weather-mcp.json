@@ -1,0 +1,43 @@
+{
+    "server_id": "weather-mcp",
+    "version": "1.0.0",
+    "publisher": "openrattler",
+    "verified": true,
+    "trust_tier": "bundled",
+    "permissions": {
+        "network": {
+            "allowed_domains": ["api.weather.gov"],
+            "deny_all_others": true
+        },
+        "data_access": {
+            "read": ["user.location"],
+            "write": []
+        },
+        "file_system": {
+            "read": [],
+            "write": []
+        },
+        "exec": false,
+        "financial": false
+    },
+    "tools": [
+        {
+            "name": "get_forecast",
+            "description": "Get weather forecast for a location",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        },
+        {
+            "name": "get_alerts",
+            "description": "Get active weather alerts for a US state",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        }
+    ],
+    "transport": "stdio",
+    "command": "python",
+    "args": ["-m", "openrattler.mcp.servers.weather"],
+    "env": {}
+}

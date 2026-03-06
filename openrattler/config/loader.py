@@ -39,6 +39,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from openrattler.models.agents import AgentConfig
+from openrattler.models.mcp import MCPSecurityConfig
 
 # ---------------------------------------------------------------------------
 # Default config path
@@ -174,6 +175,40 @@ class SecurityConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# MCPConfig
+# ---------------------------------------------------------------------------
+
+
+class MCPServerEntry(BaseModel):
+    """Enable/disable control for a single MCP server."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether this MCP server should be connected at startup.",
+    )
+
+
+class MCPConfig(BaseModel):
+    """MCP framework configuration.
+
+    Security notes:
+    - ``security`` inherits safe defaults from ``MCPSecurityConfig`` (strict
+      network isolation, 30-second timeout, 100 KB response cap).
+    - ``servers`` controls which servers connect at startup; unknown server
+      IDs here are ignored (the manifest on disk is authoritative).
+    """
+
+    security: MCPSecurityConfig = Field(
+        default_factory=MCPSecurityConfig,
+        description="MCP security settings (trust tiers, size limits, timeouts).",
+    )
+    servers: dict[str, MCPServerEntry] = Field(
+        default_factory=dict,
+        description="Per-server enable/disable overrides. Key is the server_id.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # BudgetConfig
 # ---------------------------------------------------------------------------
 
@@ -267,6 +302,10 @@ class AppConfig(BaseModel):
     channels: dict[str, ChannelConfig] = Field(
         default_factory=dict,
         description="Named channel configurations.  Key is the channel name.",
+    )
+    mcp: MCPConfig = Field(
+        default_factory=MCPConfig,
+        description="MCP framework configuration (security settings and server list).",
     )
 
 
