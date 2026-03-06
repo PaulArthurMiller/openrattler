@@ -1,5 +1,54 @@
 # OpenRattler — Build Progress
 
+## Build Piece SS-D — Social Secretary Integration ✅
+
+**Status:** Complete — on branch `build/social-secretary-integration`, PR pending review
+
+### Files Created
+
+- `openrattler/gateway/scheduler.py` — `ProcessorScheduler`:
+  - `register_processor(processor, interval_minutes)` — registers any `ProactiveProcessor`
+  - `start()` / `stop()` — manages background asyncio task
+  - `_scheduler_loop()` — ticks every 60 s, runs processors when their interval has elapsed
+  - `_run_processor_cycle(processor)` — error-isolated, audit-logged cycle execution
+  - `_dispatch_urgent_alerts(processor)` — checks pending output for `urgency="immediate"` and calls optional `on_urgent_alert` callback with a structured `UniversalMessage`
+- `openrattler/tools/social_tools.py` — `SocialTools` class with three main-only tools:
+  - `acknowledge_social_alert(alert_id)` — marks alert as handled
+  - `adjust_contact_attention(name, attention_level)` — updates contact watch level
+  - `add_learning_observation(observed, priority, relates_to, purpose)` — logs observation via security review gate
+  - `register_all(registry)` — explicit registration (not `@tool` decorator; requires bound `SocialStore`)
+- `tests/test_processors/test_social_integration.py` — 42 tests across 7 test classes
+
+### Files Modified
+
+- `openrattler/agents/runtime.py` — `AgentRuntime`:
+  - Added optional `social_store: Optional[SocialStore] = None` constructor parameter
+  - Added `_load_social_alerts(session_key) -> str` — only populates for `agent:main:*` sessions, gracefully handles store errors
+  - Modified `_build_system_prompt` to accept `alerts_section` — appended after `## Memory` section
+  - Modified `initialize_session` to call `_load_social_alerts` and wire into system prompt
+- `openrattler/config/loader.py` — `AppConfig`:
+  - Added `social_secretary: SocialSecretaryConfig = Field(default_factory=SocialSecretaryConfig)`
+
+### Test Results
+
+```
+1303 passed, 1 skipped in 41.63s  (42 new + 1261 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues ✅
+- `pytest` — 1303 collected (+1 skipped), 1303 passed ✅
+
+### Design Decisions
+
+- **ProcessorScheduler is domain-agnostic**: Accepts any `ProactiveProcessor`, uses duck-typing (`getattr(item, "urgency", None)`) to detect immediate alerts without coupling to `SocialAlert`.
+- **Urgent notification via callback**: The caller (app startup) provides an `on_urgent_alert` async callback; the scheduler builds a `UniversalMessage` from safe, typed fields before calling it — raw alert data is never forwarded.
+- **Social alerts in system prompt, not heartbeat**: Alerts are injected at `initialize_session` time. This is simpler than a heartbeat injection and ensures main always has the alert list at the start of each conversation session.
+- **`SocialTools` uses explicit registration** (`register_all(registry)`) rather than the `@tool` decorator because the handlers need a `SocialStore` instance bound to them — the decorator's module-level default registry pattern doesn't support this cleanly.
+- **Double-acknowledge is idempotent**: `SocialStore.acknowledge_alert` finds and updates the alert regardless of prior state; the tool returns `success=True` on both first and second calls.
+
+---
+
 ## Build Piece SS-C — Social Secretary Processor Engine ✅
 
 **Status:** Complete — on branch `build/social-secretary-processor`, PR pending review

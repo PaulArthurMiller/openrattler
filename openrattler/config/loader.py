@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from openrattler.models.agents import AgentConfig
 from openrattler.models.mcp import MCPSecurityConfig
+from openrattler.models.social import SocialSecretaryConfig
 
 # ---------------------------------------------------------------------------
 # Default config path
@@ -306,6 +307,10 @@ class AppConfig(BaseModel):
     mcp: MCPConfig = Field(
         default_factory=MCPConfig,
         description="MCP framework configuration (security settings and server list).",
+    )
+    social_secretary: SocialSecretaryConfig = Field(
+        default_factory=SocialSecretaryConfig,
+        description="Social Secretary proactive processor configuration.",
     )
 
 
