@@ -2,7 +2,7 @@
 
 ## Build Piece MCP-A — MCP Models and Configuration ✅
 
-**Status:** Complete — on branch `build/mcp-models`, PR pending review
+**Status:** Complete — merged via PR #24
 
 ### Files Created / Modified
 
@@ -32,6 +32,7 @@
 - **`MCPSecurityConfig.allow_auto_discovered` defaults to `"deny"`**: Auto-discovered servers are the highest risk (no prior user review). Safe default is to block them; users must explicitly opt-in to `"prompt"` or `"allow"`.
 
 ---
+
 
 ## Build Piece 17.3 — Slack Channel Adapter ✅
 
