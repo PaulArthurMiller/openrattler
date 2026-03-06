@@ -1,5 +1,37 @@
 # OpenRattler — Build Progress
 
+## Build Piece MCP-D — MCP Tool Bridge (Security Layer) ✅
+
+**Status:** Complete — on branch `build/mcp-tool-bridge`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/mcp/bridge.py` — `MCPToolBridge` + `SecurityError` exception + `_MCP_RESPONSE_SUSPICIOUS_PATTERNS`
+- `openrattler/tools/executor.py` — `mcp_bridge: Optional[MCPToolBridge]` param + MCP routing after permission check
+- `tests/test_mcp/test_bridge.py` — 39 tests across 6 test classes
+
+### Test Results
+
+```
+1073 passed, 1 skipped in 23.68s  (39 new + 1034 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/mcp/bridge.py openrattler/tools/executor.py` — no issues ✅
+- `pytest` — 1073 collected (+1 skipped), 1073 passed ✅
+
+### Design Decisions
+
+- **`execute()` never raises**: Like `ToolExecutor.execute()`, the bridge catches all exceptions (including `SecurityError`) and returns an error `ToolResult`. The caller always receives a result, never a traceback.
+- **`finally` block for audit logging**: The `MCPCallRecord` audit event is written in a `finally` block so it fires on every code path — success, approval denial, permission error, connection error, and size violation. State variables (`success`, `error`, `approval_result_str`, etc.) are updated before each `return`-equivalent path so the record is always accurate.
+- **`trace_id` doubles as `call_id`**: The `trace_id` passed to `execute()` is used as the `ToolResult.call_id`. This lets the calling `ToolExecutor` correlate bridge results with original `ToolCall` objects by passing `uuid.uuid4().hex` from the executor's routing step.
+- **Financial check always runs for financial servers**: `_check_financial_limits` is called with `Optional[MCPToolManifestEntry]` for every call to a server with `permissions.financial=True`, even for undeclared tools. Undeclared tools on financial servers should still respect the limit.
+- **Sensitive prefix allowlist**: Parameters are stripped based on three known prefixes (`user.`, `payment.`, `credentials.`). Non-sensitive keys always pass through. Only keys explicitly listed in `data_access.read` bypass the strip. This is defence-in-depth — the agent shouldn't send undeclared sensitive data, but the bridge catches it if it does.
+- **MCP routing in executor is backward-compatible**: The `mcp_bridge` param defaults to `None`. If not set, MCP tools fall through to the existing handler lookup (which returns `handler=None` → error), maintaining the existing behaviour for deployments not yet wired with a bridge.
+- **Trust level enforced in bridge, not just registry**: Even though `check_permission` in the executor already filters by trust level, the bridge re-checks `agent_config.trust_level == TrustLevel.mcp`. Defence-in-depth: the bridge never trusts that permission checks upstream were applied correctly.
+
+---
+
 ## Build Piece MCP-C — MCP Manager (Registry and Lifecycle) ✅
 
 **Status:** Complete — on branch `build/mcp-manager`, PR pending review
