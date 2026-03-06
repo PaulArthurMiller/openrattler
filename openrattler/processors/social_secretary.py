@@ -401,11 +401,7 @@ class SocialSecretaryProcessor(ProactiveProcessor):
             alert = SocialAlert(
                 source=platform,
                 person=poster,
-                relationship_strength=(
-                    contact.relationship_strength
-                    if contact and hasattr(contact, "relationship_strength")
-                    else "unknown"
-                ),
+                relationship_strength="unknown",
                 relationship_context=contact.relationship if contact else "unknown",
                 event_type=data.get("event_type", "life_event"),
                 summary=str(data.get("summary", ""))[:500],
@@ -466,7 +462,6 @@ class SocialSecretaryProcessor(ProactiveProcessor):
 
         if existing is not None:
             # Update last_updated and merge any new details from the LLM
-            updates: dict[str, Any] = {"last_updated": now}
             new_details: dict[str, str] = {}
             if alert is not None:
                 raw_nd = item.get("_new_details", {})
