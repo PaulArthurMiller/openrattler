@@ -1,5 +1,39 @@
 # OpenRattler — Build Progress
 
+## Build Piece MCP-E — Integration and Bundled Servers ✅
+
+**Status:** Complete — on branch `build/mcp-integration`, PR pending review
+
+### Files Created / Modified
+
+- `openrattler/mcp/manifests/weather-mcp.json` — Bundled weather MCP server manifest (NWS API, stdio transport)
+- `openrattler/mcp/servers/__init__.py` — Package for bundled server implementations
+- `openrattler/mcp/servers/weather.py` — `get_forecast` + `get_alerts` via FastMCP + httpx
+- `openrattler/config/loader.py` — Added `MCPServerEntry`, `MCPConfig`; `mcp` field on `AppConfig`
+- `openrattler/cli/chat.py` — MCP startup wiring in `open()`, `close()` method, cleanup in `start()`
+- `pyproject.toml` — Added `httpx>=0.27` dependency
+- `tests/test_mcp/test_integration.py` — 15 tests across 4 test classes
+- `tests/test_mcp/test_weather_server.py` — 9 tests across 2 test classes
+
+### Test Results
+
+```
+1097 passed, 1 skipped in 37.65s  (24 new + 1073 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/mcp/servers/weather.py openrattler/config/loader.py openrattler/cli/chat.py` — no issues ✅
+- `pytest` — 1097 collected (+1 skipped), 1097 passed ✅
+
+### Design Decisions
+
+- **Graceful MCP startup failure**: `CLIChat.open()` wraps `connect_all_bundled()` in try/except so a failing bundled server (subprocess crash, timeout) is logged as a warning rather than crashing the entire chat session. This keeps existing `test_chat.py` tests green without mocking MCP.
+- **`close()` method on CLIChat**: Separates MCP teardown from the interactive loop so tests that call `open()` directly (without `start()`) can still close cleanly. `start()` calls `close()` in its finally block.
+- **`MCPConfig` in `AppConfig`**: Per-server enable/disable and security settings are now first-class config fields. Defaults mirror `MCPSecurityConfig` safe defaults — strict network isolation, 30s timeout, 100KB cap.
+- **Weather server tested in isolation**: `get_forecast` and `get_alerts` are called directly (FastMCP's `@tool()` preserves function identity) with httpx mocked via `patch`. No subprocess is started in tests.
+
+---
+
 ## Build Piece MCP-D — MCP Tool Bridge (Security Layer) ✅
 
 **Status:** Complete — on branch `build/mcp-tool-bridge`, PR pending review

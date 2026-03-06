@@ -36,6 +36,7 @@ SECURITY NOTES
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,8 @@ from openrattler.agents.providers.openai_provider import OpenAIProvider
 from openrattler.agents.runtime import AgentRuntime
 from openrattler.channels.cli_adapter import CLIAdapter
 from openrattler.config.loader import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from openrattler.mcp.bridge import MCPToolBridge
+from openrattler.mcp.manager import MCPManager
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.sessions import Session
 from openrattler.storage.audit import AuditLog
@@ -53,6 +56,8 @@ from openrattler.storage.memory import MemoryStore
 from openrattler.storage.transcripts import TranscriptStore
 from openrattler.tools.executor import ToolExecutor
 from openrattler.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -175,6 +180,7 @@ class CLIChat:
         self._runtime: Optional[AgentRuntime] = None
         self._session: Optional[Session] = None
         self._audit_log: Optional[AuditLog] = None
+        self._mcp_manager: Optional[MCPManager] = None
         self._adapter: CLIAdapter = CLIAdapter()
 
     # ------------------------------------------------------------------
@@ -206,12 +212,36 @@ class CLIChat:
         memory_store = MemoryStore(memory_dir)
         audit_log = AuditLog(audit_path)
         registry = ToolRegistry()
-        executor = ToolExecutor(registry, audit_log)
-
-        provider = self._injected_provider or _build_provider_from_env()
 
         config = load_config(self._config_path)
         agent_config = _get_agent_config(config)
+
+        # --- MCP framework setup -------------------------------------------
+        mcp_security = config.mcp.security
+        mcp_manager = MCPManager(
+            security_config=mcp_security,
+            tool_registry=registry,
+            audit=audit_log,
+        )
+        bundled_dir = Path(__file__).parent.parent / "mcp" / "manifests"
+        if bundled_dir.is_dir():
+            try:
+                await mcp_manager.load_manifests_from_directory(bundled_dir)
+                await mcp_manager.connect_all_bundled()
+            except Exception:
+                logger.warning(
+                    "MCP bundled server startup failed; continuing without MCP", exc_info=True
+                )
+        mcp_bridge = MCPToolBridge(
+            mcp_manager=mcp_manager,
+            security_config=mcp_security,
+            audit=audit_log,
+        )
+        self._mcp_manager = mcp_manager
+
+        executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
+
+        provider = self._injected_provider or _build_provider_from_env()
 
         self._runtime = AgentRuntime(
             config=agent_config,
@@ -223,6 +253,14 @@ class CLIChat:
         )
         self._session = await self._runtime.initialize_session(CLI_SESSION_KEY)
         self._audit_log = audit_log
+
+    async def close(self) -> None:
+        """Disconnect all MCP servers and clean up resources.
+
+        Safe to call even if ``open()`` was never called.
+        """
+        if self._mcp_manager is not None:
+            await self._mcp_manager.disconnect_all()
 
     # ------------------------------------------------------------------
     # Message processing
@@ -292,6 +330,7 @@ class CLIChat:
                 await self._adapter.send(response)
         finally:
             await self._adapter.disconnect()
+            await self.close()
 
     # ------------------------------------------------------------------
     # Slash-command handler
