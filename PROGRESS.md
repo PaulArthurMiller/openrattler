@@ -1,5 +1,40 @@
 # OpenRattler — Build Progress
 
+## Build Piece SS-B — Social Secretary Storage Layer ✅
+
+**Status:** Complete — on branch `build/social-secretary-storage`, PR pending review
+
+### Files Created
+
+- `openrattler/storage/social.py` — `SocialStore` class managing three JSON files:
+  - `alerts.json` → `AlertQueue`: add, acknowledge, get_pending (urgency filter)
+  - `contacts.json` → `ContactsStore`: upsert (case-insensitive), find, find_by_platform
+  - `learning/queue.json` → `LearningQueue`: add, resolve, get_open (priority filter), archive_resolved
+  - `learning/resolved.json` — archive target for resolved observations
+  - Atomic writes (temp-file + `Path.replace()`), `asyncio.to_thread` I/O, per-file locks
+  - Security review on contact/observation writes; alerts bypass review (SS-generated)
+  - Audit events on every mutation; path traversal validation on `base_dir`
+- `tests/test_storage/test_social_store.py` — 49 tests across 5 test classes
+
+### Test Results
+
+```
+1214 passed, 1 skipped in 40.24s  (49 new + 1165 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/storage/social.py` — no issues ✅
+- `pytest` — 1214 collected (+1 skipped), 1214 passed ✅
+
+### Design Decisions
+
+- **`upsert_contact` returns `(bool, Optional[str])`**: Callers need to know whether the write was blocked (and why) so they can audit/log accordingly. Same pattern as `MemoryStore.apply_changes_with_review`.
+- **Alert writes bypass security review**: Alerts are produced by the Social Secretary's own evaluation pipeline from already-sanitised content — not from raw external input. Reviewing them would add latency for no security gain.
+- **`_read_resolved()` helper**: Exposes the `resolved.json` file for test inspection and future use without making it a full public API method.
+- **`archive_resolved` locks queue and resolved simultaneously**: Consistent lock ordering (`_queue_lock` then `_resolved_lock`) prevents deadlock between concurrent archive calls.
+
+---
+
 ## Build Piece SS-A — Social Secretary Models ✅
 
 **Status:** Complete — on branch `build/social-secretary-models`, PR pending review
