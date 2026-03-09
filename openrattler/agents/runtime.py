@@ -25,7 +25,8 @@ SAFETY GUARANTEES
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+import logging
+from typing import TYPE_CHECKING, Any, Optional
 
 from openrattler.agents.providers.base import LLMProvider, LLMResponse
 from openrattler.models.agents import AgentConfig
@@ -37,6 +38,11 @@ from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.transcripts import TranscriptStore
 from openrattler.tools.executor import ToolExecutor
+
+if TYPE_CHECKING:
+    from openrattler.storage.social import SocialStore
+
+logger = logging.getLogger(__name__)
 
 # Maximum number of tool-execution iterations per turn.  After this many
 # loops the runtime breaks out and returns an error to the caller.
@@ -66,6 +72,7 @@ class AgentRuntime:
         transcript_store: TranscriptStore,
         memory_store: MemoryStore,
         audit_log: AuditLog,
+        social_store: Optional["SocialStore"] = None,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -73,6 +80,7 @@ class AgentRuntime:
         self._transcript_store = transcript_store
         self._memory_store = memory_store
         self._audit = audit_log
+        self._social_store = social_store
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,7 +102,8 @@ class AgentRuntime:
         memory_id = session_key.split(":")[1]
         history = await self._transcript_store.load(session_key)
         memory = await self._memory_store.load(memory_id)
-        system_prompt = self._build_system_prompt(memory)
+        alerts_section = await self._load_social_alerts(session_key)
+        system_prompt = self._build_system_prompt(memory, alerts_section)
         return Session(
             key=session_key,
             agent_id=agent_id,
@@ -246,18 +255,62 @@ class AgentRuntime:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self, memory: dict[str, Any]) -> str:
-        """Combine the agent's base system prompt with any loaded memory.
+    def _build_system_prompt(self, memory: dict[str, Any], alerts_section: str = "") -> str:
+        """Combine the agent's base system prompt with memory and social alerts.
 
         The base prompt is taken from ``config.system_prompt``.  If the memory
-        dict is non-empty, a ``## Memory`` section is appended so the LLM has
-        access to persistent state.
+        dict is non-empty, a ``## Memory`` section is appended.  If
+        ``alerts_section`` is non-empty, it is appended after memory so the
+        LLM has visibility of pending social alerts at session start.
         """
         parts = [self._config.system_prompt] if self._config.system_prompt else []
         if memory:
             mem_lines = "\n".join(f"- {k}: {v}" for k, v in memory.items())
             parts.append(f"## Memory\n{mem_lines}")
+        if alerts_section:
+            parts.append(alerts_section)
         return "\n\n".join(parts)
+
+    async def _load_social_alerts(self, session_key: str) -> str:
+        """Load pending social alerts for inclusion in the main session prompt.
+
+        Only populated for ``agent:main:*`` sessions.  Returns an empty string
+        if the Social Secretary is not configured, the store has no pending
+        alerts, or the session is not a main session.
+
+        Security notes:
+        - Only reads from the Social Secretary's own store — no other data
+          sources are accessed here.
+        - Alerts are already sanitised by the Social Secretary before storage;
+          they do not re-enter the sanitisation pipeline here.
+        """
+        if self._social_store is None:
+            return ""
+        if not session_key.startswith("agent:main:"):
+            return ""
+        try:
+            alerts = await self._social_store.get_pending_alerts()
+        except Exception as exc:
+            logger.warning("AgentRuntime: failed to load social alerts: %s", exc)
+            return ""
+        if not alerts:
+            return ""
+        lines = [
+            "## Pending Social Alerts",
+            "",
+            "The Social Secretary has flagged the following for your attention.",
+            "Surface these naturally in conversation — don't dump them all at once.",
+            "Prioritise by urgency. After mentioning an alert, acknowledge it with "
+            "the acknowledge_social_alert tool.",
+            "",
+        ]
+        for alert in alerts:
+            lines.append(
+                f"- [{alert.urgency}] {alert.summary} "
+                f"(source: {alert.source}, person: {alert.person}, "
+                f"confidence: {alert.confidence:.1f}, id: {alert.id})"
+            )
+        return "\n".join(lines)
 
     def _build_messages(self, session: Session) -> list[dict[str, Any]]:
         """Convert session history to OpenAI-format message dicts.
