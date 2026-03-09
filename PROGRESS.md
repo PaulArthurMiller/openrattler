@@ -1,5 +1,51 @@
 # OpenRattler — Build Progress
 
+## Build Piece 33.1 — Production Startup Wiring (`openrattler run`) ✅
+
+**Status:** Complete
+
+### Files Created
+
+- `openrattler/startup.py` — `ApplicationContext` + `build_application` factory:
+  - `build_provider_from_env()` — reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+  - `_build_channel_adapters(config, audit)` — factory map for slack/email/sms; skips disabled + unknown
+  - `ApplicationContext.__init__` — holds all wired components
+  - `ApplicationContext.start()` — connects SS processor, starts scheduler, starts Gateway, launches channel tasks, audit-logs `application_started`
+  - `ApplicationContext.stop()` — cancels channel tasks, stops scheduler, disconnects SS processor, stops Gateway, disconnects MCP, audit-logs `application_stopped`
+  - `ApplicationContext.run_until_interrupted()` — start → block on future → stop (SIGTERM + Ctrl+C)
+  - `ApplicationContext._get_or_create_session(key)` — lazy session initialisation with dict cache
+  - `ApplicationContext._channel_loop(adapter)` — connect → receive/dispatch → send asyncio task
+  - `build_application(...)` — 15-step wiring factory (injectable provider + mcp_manifests_dir for tests)
+- `tests/test_startup/__init__.py` — empty
+- `tests/test_startup/test_startup.py` — 23 tests across 5 classes
+
+### Files Modified
+
+- `openrattler/cli/main.py`:
+  - Added `_cmd_run(args)` handler — calls `build_application` + `ctx.run_until_interrupted()`
+  - Added `run` subparser with `--config`, `--host`, `--port` flags
+  - Added `run` dispatch in `main()`
+
+### Test Results
+
+```
+1326 passed, 1 skipped in 40.81s  (23 new + 1303 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (68 source files) ✅
+- `pytest` — 1326 collected (+1 skipped), 1326 passed ✅
+
+### Design Decisions
+
+- **`build_provider_from_env` is a public helper in startup.py**: Duplicates the private helper in `cli/chat.py` rather than modifying that tested file, as specified in the plan.
+- **Channel adapters use lazy imports**: `_build_channel_adapters` imports slack/email/sms inside the function to avoid circular imports and keep startup.py import surface small.
+- **MCP connection failures are non-fatal**: `connect_all_bundled()` failure is caught + WARNING logged; `ApplicationContext` is returned without MCP tools.
+- **SIGTERM handler is Windows-guarded**: `loop.add_signal_handler(SIGTERM, ...)` is wrapped in `NotImplementedError` catch for Windows; KeyboardInterrupt via `asyncio.run` provides the fallback.
+- **Gateway always starts in `openrattler run`**: `start_gateway=True` is hardcoded in `_cmd_run`; `start_gateway=False` is the test-friendly path.
+
+---
+
 ## Build Piece SS-D — Social Secretary Integration ✅
 
 **Status:** Complete — on branch `build/social-secretary-integration`, PR pending review
