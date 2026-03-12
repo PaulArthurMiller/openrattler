@@ -1,21 +1,24 @@
-"""CLI entry point — openrattler init / chat / sessions list.
+"""CLI entry point — openrattler init / chat / run / sessions list.
 
 Usage (after ``pip install -e .``)::
 
     openrattler init            # create workspace, default config
     openrattler chat            # start interactive chat
+    openrattler run             # start full production server
     openrattler sessions list   # list all session keys
 
 Or directly::
 
     python -m openrattler init
     python -m openrattler chat
+    python -m openrattler run
 
 SECURITY NOTES
 --------------
 - ``init`` creates ``~/.openrattler`` with ``mode=0o700`` so only the owning
   user can read or write the directory.
 - ``chat`` never prints the config file contents; API keys remain private.
+- ``run`` reads ``OPENRATTLER_WS_SECRET`` for the Gateway token secret.
 """
 
 from __future__ import annotations
@@ -117,6 +120,30 @@ def _cmd_chat(args: argparse.Namespace) -> None:
     asyncio.run(chat.start())
 
 
+def _cmd_run(args: argparse.Namespace) -> None:
+    import asyncio
+
+    from openrattler.startup import build_application
+
+    workspace = Path(args.workspace) if args.workspace else DEFAULT_WORKSPACE
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+
+    async def _run() -> None:
+        ctx = await build_application(
+            workspace_dir=workspace,
+            config_path=config_path,
+            gateway_host=args.host,
+            gateway_port=args.port,
+            start_gateway=True,
+        )
+        await ctx.run_until_interrupted()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
 def _cmd_sessions_list(args: argparse.Namespace) -> None:
     workspace = Path(args.workspace) if args.workspace else DEFAULT_WORKSPACE
     keys = list_sessions(workspace)
@@ -165,6 +192,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"config file path (default: {DEFAULT_CONFIG_PATH})",
     )
 
+    # run
+    run_parser = subparsers.add_parser(
+        "run",
+        help="start the full production server (Gateway + channels + Social Secretary)",
+    )
+    run_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help=f"config file path (default: {DEFAULT_CONFIG_PATH})",
+    )
+    run_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        metavar="HOST",
+        help="WebSocket Gateway bind host (default: 127.0.0.1)",
+    )
+    run_parser.add_argument(
+        "--port",
+        default=8765,
+        type=int,
+        metavar="PORT",
+        help="WebSocket Gateway bind port (default: 8765)",
+    )
+
     # sessions
     sessions_parser = subparsers.add_parser(
         "sessions",
@@ -191,6 +243,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_init(args)
     elif args.command == "chat":
         _cmd_chat(args)
+    elif args.command == "run":
+        _cmd_run(args)
     elif args.command == "sessions":
         if args.sessions_command == "list":
             _cmd_sessions_list(args)
