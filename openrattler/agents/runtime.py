@@ -40,6 +40,7 @@ from openrattler.storage.transcripts import TranscriptStore
 from openrattler.tools.executor import ToolExecutor
 
 if TYPE_CHECKING:
+    from openrattler.identity.loader import IdentityLoader
     from openrattler.storage.social import SocialStore
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ class AgentRuntime:
         memory_store: MemoryStore,
         audit_log: AuditLog,
         social_store: Optional["SocialStore"] = None,
+        identity_loader: Optional["IdentityLoader"] = None,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -81,6 +83,7 @@ class AgentRuntime:
         self._memory_store = memory_store
         self._audit = audit_log
         self._social_store = social_store
+        self._identity_loader = identity_loader
 
     # ------------------------------------------------------------------
     # Public API
@@ -97,13 +100,16 @@ class AgentRuntime:
             a fully-rendered system prompt.
         """
         agent_id = self._config.agent_id
-        # MemoryStore only accepts colon-free names; the session key encodes
-        # the bare agent name as the second colon-delimited component.
-        memory_id = session_key.split(":")[1]
         history = await self._transcript_store.load(session_key)
-        memory = await self._memory_store.load(memory_id)
         alerts_section = await self._load_social_alerts(session_key)
-        system_prompt = self._build_system_prompt(memory, alerts_section)
+
+        if self._identity_loader is not None:
+            identity_prompt = await self._identity_loader.load_system_prompt()
+        else:
+            # Subagent fallback: use the agent's own system_prompt field directly.
+            identity_prompt = self._config.system_prompt
+
+        system_prompt = self._build_system_prompt(identity_prompt, alerts_section)
         return Session(
             key=session_key,
             agent_id=agent_id,
@@ -255,18 +261,22 @@ class AgentRuntime:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self, memory: dict[str, Any], alerts_section: str = "") -> str:
-        """Combine the agent's base system prompt with memory and social alerts.
+    def _build_system_prompt(self, identity_prompt: str, alerts_section: str = "") -> str:
+        """Combine the assembled identity prompt with the social alerts section.
 
-        The base prompt is taken from ``config.system_prompt``.  If the memory
-        dict is non-empty, a ``## Memory`` section is appended.  If
-        ``alerts_section`` is non-empty, it is appended after memory so the
-        LLM has visibility of pending social alerts at session start.
+        ``identity_prompt`` is either the full assembled text from
+        ``IdentityLoader.load_system_prompt()`` (main agent) or the raw
+        ``config.system_prompt`` string (subagent fallback).
+
+        Structured memory facts (MemoryStore) are no longer injected here —
+        they are accessed on demand via the ``memory_read`` tool.  Only the
+        narrative ``MEMORY.md`` content is included, and that is already
+        embedded inside ``identity_prompt`` by ``IdentityLoader``.
+
+        If ``alerts_section`` is non-empty it is appended last so the LLM
+        has visibility of pending social alerts at session start.
         """
-        parts = [self._config.system_prompt] if self._config.system_prompt else []
-        if memory:
-            mem_lines = "\n".join(f"- {k}: {v}" for k, v in memory.items())
-            parts.append(f"## Memory\n{mem_lines}")
+        parts = [identity_prompt] if identity_prompt else []
         if alerts_section:
             parts.append(alerts_section)
         return "\n\n".join(parts)

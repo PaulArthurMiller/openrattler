@@ -135,16 +135,18 @@ class TestInitializeSession:
         session = await runtime.initialize_session(_SESSION)
         assert "helpful test agent" in session.system_prompt
 
-    async def test_memory_injected_into_system_prompt(self, tmp_path: Path) -> None:
+    async def test_memory_store_not_injected_into_system_prompt(self, tmp_path: Path) -> None:
+        # MemoryStore facts are no longer dumped into the system prompt.
+        # They are accessed on demand via the memory_read tool.
         mem_store = MemoryStore(tmp_path / "memory")
         await mem_store.save("main", {"user_name": "Alice"})
 
         runtime = _make_runtime(tmp_path, _mock_provider())
-        # Manually wire the runtime's memory store to the one we pre-populated
         runtime._memory_store = mem_store
 
         session = await runtime.initialize_session(_SESSION)
-        assert "Alice" in session.system_prompt
+        # "Alice" should NOT appear in the system prompt.
+        assert "Alice" not in session.system_prompt
 
     async def test_agent_id_set_on_session(self, tmp_path: Path) -> None:
         runtime = _make_runtime(tmp_path, _mock_provider())

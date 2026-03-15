@@ -7,7 +7,7 @@ an ``ApplicationContext`` that owns the full system.  The context's
 COMPONENT WIRING ORDER
 ----------------------
 1.  Load config
-2.  Create workspace subdirectories
+2.  Create workspace subdirectories (including identity/)
 3.  AuditLog
 4.  TranscriptStore + MemoryStore
 5.  MemorySecurityAgent
@@ -16,8 +16,10 @@ COMPONENT WIRING ORDER
 8.  MCPManager — load manifests + connect bundled servers
 9.  MCPToolBridge + ToolExecutor
 10. SocialTools registered into registry
+10b.NarrativeMemoryTools registered into registry
 11. LLM provider (injectable or from env)
-12. AgentRuntime
+11b.IdentityLoader
+12. AgentRuntime (receives IdentityLoader)
 13. Social Secretary processor + scheduler (if enabled)
 14. Gateway + TokenAuth (if enabled)
 15. Channel adapters (enabled ones only)
@@ -36,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 from pathlib import Path
 from typing import Optional
@@ -46,6 +49,8 @@ from openrattler.agents.providers.openai_provider import OpenAIProvider
 from openrattler.agents.runtime import AgentRuntime
 from openrattler.channels.base import ChannelAdapter
 from openrattler.config.loader import DEFAULT_CONFIG_PATH, AppConfig, ChannelConfig, load_config
+from openrattler.identity.loader import RUNTIME_FILES, TEMPLATE_FILES, IdentityLoader
+from openrattler.tools.builtin.memory_tools import NarrativeMemoryTools
 from openrattler.gateway.auth import TokenAuth
 from openrattler.gateway.scheduler import ProcessorScheduler
 from openrattler.gateway.server import Gateway
@@ -161,6 +166,39 @@ def _build_channel_adapters(
         adapters.append(factory(cfg, audit=audit))  # type: ignore[call-arg]
 
     return adapters
+
+
+def _populate_identity_dir(identity_dir: Path) -> None:
+    """Ensure the runtime identity directory contains the expected files.
+
+    - Template files (SOUL.md, IDENTITY.md, BOOTSTRAP.md, HEARTBEAT.md) are
+      copied from the package templates directory if they do not yet exist in
+      ``identity_dir``.  Existing user-customised copies are never overwritten.
+    - Runtime files (USER.md, MEMORY.md) are created as empty files if absent.
+      They are never overwritten or populated from a template.
+
+    Security notes:
+    - USER.md is never created with content here — it is always populated
+      through the ``update_user_profile`` tool (which runs the security review
+      gate) after the bootstrap flow.
+    - Existing identity files are never overwritten — user customisations are
+      preserved across restarts.
+    """
+    from openrattler.identity.loader import _TEMPLATES_DIR
+
+    for filename in TEMPLATE_FILES:
+        dest = identity_dir / filename
+        if not dest.exists():
+            src = _TEMPLATES_DIR / filename
+            if src.exists():
+                shutil.copy(src, dest)
+            else:
+                logger.warning("_populate_identity_dir: template %s not found", src)
+
+    for filename in RUNTIME_FILES:
+        runtime_path = identity_dir / filename
+        if not runtime_path.exists():
+            runtime_path.write_text("", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -377,9 +415,16 @@ async def build_application(
     # 1. Load config.
     config = load_config(config_path)
 
-    # 2. Create workspace subdirectories.
-    for subdir in ("sessions", "memory", "audit", "social"):
+    # 2. Create workspace subdirectories (including identity/).
+    for subdir in ("sessions", "memory", "audit", "social", "identity"):
         (workspace_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    # 2b. Populate identity directory.
+    #     Copy any missing template files from the package so the user has
+    #     editable local copies.  Runtime files (USER.md, MEMORY.md) are
+    #     created as empty files if absent — never overwritten if they exist.
+    identity_dir = workspace_dir / "identity"
+    _populate_identity_dir(identity_dir)
 
     # 3. AuditLog.
     audit = AuditLog(workspace_dir / "audit" / "audit.jsonl")
@@ -434,11 +479,26 @@ async def build_application(
     # 10. SocialTools.
     SocialTools(social_store, audit).register_all(registry)
 
+    # 10b. NarrativeMemoryTools.
+    NarrativeMemoryTools(
+        identity_dir=identity_dir,
+        memory_config=config.memory,
+        security_agent=mem_security_agent,
+        audit=audit,
+    ).register_all(registry)
+
     # 11. LLM provider.
     llm_provider = provider or build_provider_from_env()
 
-    # 12. AgentRuntime.
+    # 11b. IdentityLoader.
     agent_config = config.agents.get("main", _DEFAULT_AGENT_CONFIG)
+    identity_loader = IdentityLoader(
+        identity_dir=identity_dir,
+        agent_config=agent_config,
+        tool_registry=registry,
+    )
+
+    # 12. AgentRuntime.
     runtime = AgentRuntime(
         config=agent_config,
         provider=llm_provider,
@@ -447,6 +507,7 @@ async def build_application(
         memory_store=memory_store,
         audit_log=audit,
         social_store=social_store,
+        identity_loader=identity_loader,
     )
 
     # 13. Social Secretary processor + scheduler (if enabled).

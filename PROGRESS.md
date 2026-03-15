@@ -1,5 +1,86 @@
 # OpenRattler — Build Progress
 
+## Build Piece 34.1 — Identity System (IdentityLoader + Narrative Memory Tools) ✅
+
+**Status:** Complete
+
+### Files Created
+
+- `openrattler/identity/__init__.py` — package docstring
+- `openrattler/identity/loader.py` — `IdentityLoader` class:
+  - `load_system_prompt()` — async; assembles full system prompt from identity files
+  - `load_heartbeat_section()` — async; loads HEARTBEAT.md for scheduled turns
+  - `_assemble_system_prompt()` — sync inner (runs in thread); SOUL → IDENTITY → USER/BOOTSTRAP → CONTEXT → MEMORY.md
+  - `_load_template_file(filename)` — identity_dir first, package template fallback
+  - `_load_runtime_file(filename)` — identity_dir only (USER.md, MEMORY.md)
+  - `_is_bootstrap_needed()` — returns True when USER.md is absent or empty
+  - `_generate_context_section()` — datetime + per-agent permitted tool list (filtered by `list_tools_for_agent`)
+- `openrattler/identity/templates/SOUL.md` — core values, personality, ethical frame
+- `openrattler/identity/templates/IDENTITY.md` — role, capabilities, per-session operational guidance, memory system explanation, escalation rules
+- `openrattler/identity/templates/BOOTSTRAP.md` — first-run setup wizard; guides agent to ask 5 personalisation questions, then save answers via `update_user_profile`
+- `openrattler/identity/templates/HEARTBEAT.md` — scheduled check-in mode guidance
+- `openrattler/tools/builtin/memory_tools.py` — `NarrativeMemoryTools` class:
+  - `register_all(registry)` — registers `update_memory_narrative` and `update_user_profile`
+  - `_update_memory_narrative(mode, content)` — append or replace MEMORY.md; token limits enforced; security review; atomic write; capacity reporting
+  - `_update_user_profile(content)` — replace USER.md; token limit enforced; security review; atomic write
+  - `_build_diff(current, new, mode)` — builds `MemorySecurityAgent`-compatible diff dict
+  - `_status_message(filename, used, max)` — token usage report with near-full warning at 80%
+  - `_approx_tokens(text)` — `max(1, len(text) // 4)` approximation
+  - `_atomic_write(path, content)` — temp file + `Path.replace()` atomic write helper
+- `tests/test_identity/__init__.py` — empty
+- `tests/test_identity/test_loader.py` — 23 tests across 7 classes
+- `tests/test_identity/test_memory_tools.py` — 33 tests across 8 classes
+
+### Files Modified
+
+- `openrattler/config/loader.py`:
+  - Added `MemoryConfig` model — `narrative_max_tokens` (default 2000), `narrative_max_write_tokens` (default 300), `user_profile_max_tokens` (default 500); all `ge=1`
+  - Added `memory: MemoryConfig` field to `AppConfig`
+- `openrattler/agents/runtime.py`:
+  - Added `identity_loader: Optional[IdentityLoader] = None` constructor parameter
+  - `initialize_session` — now uses `IdentityLoader.load_system_prompt()` when loader present; falls back to `config.system_prompt` for subagents; **no longer loads MemoryStore into prompt**
+  - `_build_system_prompt` — simplified to `(identity_prompt, alerts_section)`; MemoryStore dump removed
+  - Added `TYPE_CHECKING` import for `IdentityLoader`
+- `openrattler/startup.py`:
+  - Added `shutil` import
+  - Added `IdentityLoader` and `NarrativeMemoryTools` imports
+  - Updated wiring docstring to include steps 2b, 10b, 11b
+  - Step 2: added `"identity"` to workspace subdirectory list
+  - Step 2b: `_populate_identity_dir(identity_dir)` — copies missing templates, creates empty USER.md/MEMORY.md
+  - Step 10b: `NarrativeMemoryTools(...).register_all(registry)`
+  - Step 11b: `IdentityLoader(identity_dir, agent_config, registry)` instantiated
+  - Step 12: `AgentRuntime` now receives `identity_loader=identity_loader`
+  - Added `_populate_identity_dir(identity_dir)` helper function
+- `tests/test_agents/test_runtime.py`:
+  - `test_memory_injected_into_system_prompt` replaced with `test_memory_store_not_injected_into_system_prompt` — verifies MemoryStore facts are no longer in the prompt
+
+### Test Results
+
+```
+1382 passed, 1 skipped in 22.22s  (56 new + 1326 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (71 source files) ✅
+- `pytest` — 1382 collected (+1 skipped), 1382 passed ✅
+
+### Design Decisions
+
+- **Two memory systems remain distinct**: `MemoryStore` (memory.json, key-value, tool-accessed) is no longer injected into the system prompt. `MEMORY.md` (narrative, file-based) is loaded into the prompt at session start. This prevents token pressure from a growing fact library while keeping working context available.
+- **`MemoryConfig.ge=1` not `ge=100/50`**: Lower bounds allow test values; the default 2000/300/500 are the meaningful production defaults.
+- **`update_user_profile` is always a full replace**: USER.md is a holistic profile — partial append would create inconsistency. The agent is expected to re-write the whole document when updating.
+- **Token approximation `chars ÷ 4`**: Avoids a tokeniser dependency (`tiktoken` etc.). Slightly imprecise but configurable limits accommodate the variance.
+- **`_populate_identity_dir` never overwrites**: Template files are copied only if absent; USER.md and MEMORY.md are created empty only if absent. User customisations survive restarts.
+- **`identity_loader=None` is the subagent fallback**: Specialised subagents use their `AgentConfig.system_prompt` directly — they do not need the full personal identity context. This preserves backward compatibility for all existing tests.
+- **BOOTSTRAP.md triggers on empty USER.md**: Simple, reliable detection. Re-running setup is possible by clearing USER.md.
+
+### Next Steps
+
+- **35.1**: Wire HEARTBEAT.md injection into `ProcessorScheduler` scheduled turns (currently `load_heartbeat_section()` exists on `IdentityLoader` but is not yet called by the scheduler).
+- **Memory tool permissions**: Currently `update_memory_narrative` and `update_user_profile` require `TrustLevel.main`. Verify this is correct for all expected callers before production use.
+
+---
+
 ## Build Piece 33.1 — Production Startup Wiring (`openrattler run`) ✅
 
 **Status:** Complete
