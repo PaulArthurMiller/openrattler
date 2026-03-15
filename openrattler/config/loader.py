@@ -273,6 +273,57 @@ class ChannelConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# MemoryConfig
+# ---------------------------------------------------------------------------
+
+
+class MemoryConfig(BaseModel):
+    """Configuration for the agent's narrative memory file (MEMORY.md).
+
+    The narrative memory file is a free-form Markdown document loaded into the
+    system prompt at session start.  Both limits are enforced in the
+    ``update_memory_narrative`` tool using a character-based token approximation
+    (``len(text) // 4``) to avoid a tokeniser dependency.
+
+    Security notes:
+    - Token limits are enforced before the security review gate, so even a
+      legitimate write cannot grow MEMORY.md beyond the configured ceiling.
+    - Defaults are conservative; increase ``narrative_max_tokens`` only if the
+      assistant consistently runs out of space for meaningful context.
+    """
+
+    narrative_max_tokens: int = Field(
+        default=2000,
+        ge=1,
+        description=(
+            "Maximum size of MEMORY.md in approximate tokens (chars ÷ 4). "
+            "Default 2000. Increase if working memory regularly fills up."
+        ),
+    )
+    narrative_max_write_tokens: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "Maximum tokens allowed in a single write to MEMORY.md. "
+            "Keeps individual entries concise. Default 300."
+        ),
+    )
+    user_profile_max_tokens: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Maximum size of USER.md in approximate tokens (chars ÷ 4). "
+            "Default 500. USER.md is always a full replace."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AppConfig — top-level configuration model
+# ---------------------------------------------------------------------------
+
+
 class AppConfig(BaseModel):
     """Top-level OpenRattler configuration.
 
@@ -311,6 +362,10 @@ class AppConfig(BaseModel):
     social_secretary: SocialSecretaryConfig = Field(
         default_factory=SocialSecretaryConfig,
         description="Social Secretary proactive processor configuration.",
+    )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description="Narrative memory (MEMORY.md) and user profile (USER.md) size limits.",
     )
 
 
