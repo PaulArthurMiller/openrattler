@@ -1,5 +1,107 @@
 # OpenRattler — Build Progress
 
+## Build Piece 36.1 — Tool Permissions, Memory Tools Completion ✅
+
+**Status:** Complete
+
+### Files Modified
+
+- `openrattler/config/loader.py`:
+  - Added `identity_max_tokens: int = 500` to `MemoryConfig` — caps IDENTITY.md size
+  - Added `ToolsConfig` model — `trust_defaults: dict[str, list[str]]` maps trust level
+    names to tool allowlists; default populates `main` with all five narrative memory tools
+  - Added `tools: ToolsConfig` field to `AppConfig`
+- `openrattler/tools/builtin/memory_tools.py`:
+  - Added `json` + `Awaitable`/`Callable` imports; `MemoryStore` TYPE_CHECKING import
+  - Added `memory_store: Optional[MemoryStore]` parameter to `NarrativeMemoryTools.__init__`
+  - Added `on_security_alert: Optional[Callable[[str, str], Awaitable[None]]]` parameter —
+    fires independently when a write is blocked so the event reaches the user out-of-band
+  - Added `update_identity` tool — full replace of `IDENTITY.md`; same pattern as
+    `update_user_profile` (token limit, security review, atomic write)
+  - Added `memory_read` tool — reads from `MemoryStore`; optional `key` param for single
+    top-level field; registered only when `memory_store` is provided
+  - Added `memory_write` tool — accepts `changes_json: str` (JSON-encoded dict), parses
+    server-side, calls `MemoryStore.apply_changes_with_review`; registered only when
+    `memory_store` is provided
+  - Updated `_update_memory_narrative` and `_update_user_profile` security-block paths to
+    call `on_security_alert` before returning the error string
+- `openrattler/startup.py`:
+  - Added `ToolsConfig` to config imports
+  - Added `_resolve_agent_tools(agent_config, tools_config) -> AgentConfig` helper —
+    merges `trust_defaults[trust_level]` into `allowed_tools` (defaults first, per-agent
+    additions after, deduped, no mutation of the original)
+  - Updated step 10b: `NarrativeMemoryTools` now receives `memory_store` and
+    `on_security_alert` (wired to `logger.warning` for out-of-band user visibility)
+  - Updated step 11b: `raw_agent_config` fetched from config, then `_resolve_agent_tools`
+    applied to produce the effective `agent_config` used for `IdentityLoader` and `AgentRuntime`
+  - Updated wiring docstring to reflect new steps 11b/11c
+- `tests/test_config/test_loader.py`:
+  - Added `MemoryConfig` and `ToolsConfig` imports
+  - `TestMemoryConfig` (3 tests) — `identity_max_tokens` default, custom, minimum validation
+  - `TestToolsConfig` (5 tests) — default main tools present, public empty, custom accepted,
+    AppConfig includes field, round-trip via JSON
+- `tests/test_identity/test_memory_tools.py`:
+  - Added `json` import; added `MemoryStore` import
+  - Updated `_make_tools` helper to accept `identity_max_tokens`, `memory_store`,
+    `on_security_alert` parameters
+  - `TestNewToolRegistration` (5 tests) — update_identity present, memory_read/write absent
+    without store, present with store
+  - `TestUpdateIdentity` (5 tests) — creates file, replaces existing, token limit, security
+    gate blocks, reports token usage
+  - `TestSecurityAlertCallback` (5 tests) — callback fires for each blocked write target,
+    no callback on approved write, None callback is safe
+  - `TestMemoryRead` (5 tests) — empty store, full store, single key, missing key, no store
+  - `TestMemoryWrite` (7 tests) — writes facts, invalid JSON, non-object JSON, security gate
+    blocks, bootstrap_complete settable, no store, callback on block
+- `tests/test_startup/test_startup.py`:
+  - Added `ToolsConfig`, `AgentConfig`, `TrustLevel`, `_resolve_agent_tools` imports
+  - Added `_make_agent` helper
+  - `TestResolveAgentTools` (8 tests) — defaults added, per-agent extends, dedup, order,
+    no defaults for level, original not mutated, default AppConfig gives five tools,
+    build_application applies resolution end-to-end
+- `tests/test_identity/test_loader.py`:
+  - Fixed 3 assertions checking for `"First-Run Setup"` → `"No memory yet"` to match the
+    updated BOOTSTRAP.md pulled from main
+
+### Test Results
+
+```
+1443 passed, 1 skipped in 22.16s  (43 new + 1400 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (71 source files) ✅
+- `pytest` — 1443 collected (+1 skipped), 1443 passed ✅
+
+### Design Decisions
+
+- **`ToolsConfig.trust_defaults` not `allowed_tools_by_level`**: Shorter, clearer. The key
+  is the trust level name string (e.g. `"main"`) matching `TrustLevel.value`.
+- **`_resolve_agent_tools` returns a copy, never mutates**: `model_copy(update=...)` produces
+  a fresh `AgentConfig`. The original loaded from config is preserved; only the runtime
+  receives the augmented version.
+- **Defaults-first ordering**: Trust defaults come before per-agent additions in the merged
+  list. This means the baseline tools always appear at the front, and per-agent customisations
+  extend the tail — predictable and easy to reason about.
+- **`memory_read`/`memory_write` gated on `memory_store is not None`**: Prevents a confusing
+  "tool exists but always errors" state. If the store isn't wired, the tools simply aren't
+  offered to the agent.
+- **`on_security_alert` fires before the error return**: Ensures the out-of-band signal is
+  sent even if the calling code swallows the return value.
+- **Bootstrap test assertions updated to match new BOOTSTRAP.md**: The new template (pulled
+  from main) replaced "First-Run Setup" with a different opening. Tests now key on
+  `"No memory yet"` which appears in the first-run greeting line.
+
+### Next Steps
+
+- **36.2** (or later): Wire `on_security_alert` into the active session output channel so
+  the user sees a live message in addition to the WARNING log — currently the log is the
+  only out-of-band signal.
+- **35.2** (or later): Wire `IdentityLoader.load_heartbeat_section()` into
+  `ProcessorScheduler` so HEARTBEAT.md is injected into scheduled turns.
+
+---
+
 ## Build Piece 35.1 — Enhanced Context Generation ✅
 
 **Status:** Complete

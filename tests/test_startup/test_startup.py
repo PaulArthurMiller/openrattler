@@ -11,9 +11,15 @@ import pytest
 
 from openrattler.agents.providers.base import LLMProvider, LLMResponse
 from openrattler.channels.base import ChannelAdapter
-from openrattler.config.loader import AppConfig, ChannelConfig
+from openrattler.config.loader import AppConfig, ChannelConfig, ToolsConfig
+from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.social import SocialSecretaryConfig
-from openrattler.startup import ApplicationContext, _build_channel_adapters, build_application
+from openrattler.startup import (
+    ApplicationContext,
+    _build_channel_adapters,
+    _resolve_agent_tools,
+    build_application,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -332,6 +338,97 @@ class TestChannelAdapterFactory:
 # ---------------------------------------------------------------------------
 # TestRunCliSubcommand
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# TestResolveAgentTools
+# ---------------------------------------------------------------------------
+
+
+def _make_agent(trust_level: TrustLevel = TrustLevel.main) -> AgentConfig:
+    return AgentConfig(
+        agent_id="agent:main:main",
+        name="Main",
+        description="Test agent",
+        model="anthropic/claude-sonnet-4-6",
+        trust_level=trust_level,
+    )
+
+
+class TestResolveAgentTools:
+    def test_trust_defaults_added_to_empty_allowed_tools(self) -> None:
+        agent = _make_agent()
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["tool_a", "tool_b"]})
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        assert resolved.allowed_tools == ["tool_a", "tool_b"]
+
+    def test_per_agent_tools_extend_defaults(self) -> None:
+        agent = _make_agent()
+        agent = agent.model_copy(update={"allowed_tools": ["tool_c"]})
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["tool_a", "tool_b"]})
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        assert resolved.allowed_tools == ["tool_a", "tool_b", "tool_c"]
+
+    def test_duplicates_are_deduped(self) -> None:
+        agent = _make_agent()
+        agent = agent.model_copy(update={"allowed_tools": ["tool_a"]})
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["tool_a", "tool_b"]})
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        assert resolved.allowed_tools.count("tool_a") == 1
+
+    def test_defaults_order_preserved_before_per_agent(self) -> None:
+        agent = _make_agent()
+        agent = agent.model_copy(update={"allowed_tools": ["extra"]})
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["first", "second"]})
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        assert resolved.allowed_tools == ["first", "second", "extra"]
+
+    def test_no_defaults_for_trust_level_leaves_explicit_tools(self) -> None:
+        agent = _make_agent(TrustLevel.local)
+        agent = agent.model_copy(update={"allowed_tools": ["my_tool"]})
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["main_tool"]})
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        assert resolved.allowed_tools == ["my_tool"]
+
+    def test_original_agent_config_not_mutated(self) -> None:
+        agent = _make_agent()
+        tools_cfg = ToolsConfig(trust_defaults={"main": ["tool_a"]})
+        _resolve_agent_tools(agent, tools_cfg)
+        assert agent.allowed_tools == []
+
+    def test_default_appconfig_gives_main_agent_five_tools(self) -> None:
+        agent = _make_agent()
+        tools_cfg = ToolsConfig()
+        resolved = _resolve_agent_tools(agent, tools_cfg)
+        for tool_name in [
+            "update_memory_narrative",
+            "update_user_profile",
+            "update_identity",
+            "memory_read",
+            "memory_write",
+        ]:
+            assert tool_name in resolved.allowed_tools
+
+    def test_build_application_applies_tool_resolution(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        """The main agent config produced by build_application has the default tools."""
+        import asyncio
+
+        async def _run() -> list[str]:
+            ctx = await build_application(
+                workspace_dir=tmp_path,
+                provider=stub_provider,
+                mcp_manifests_dir=empty_mcp_dir,
+                start_gateway=False,
+            )
+            return list(ctx._runtime._config.allowed_tools)
+
+        tools = asyncio.get_event_loop().run_until_complete(_run())
+        assert "update_memory_narrative" in tools
+        assert "update_identity" in tools
+        assert "memory_read" in tools
+        assert "memory_write" in tools
 
 
 class TestRunCliSubcommand:

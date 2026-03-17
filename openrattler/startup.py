@@ -16,9 +16,10 @@ COMPONENT WIRING ORDER
 8.  MCPManager — load manifests + connect bundled servers
 9.  MCPToolBridge + ToolExecutor
 10. SocialTools registered into registry
-10b.NarrativeMemoryTools registered into registry
+10b.NarrativeMemoryTools registered into registry (with MemoryStore + alert callback)
 11. LLM provider (injectable or from env)
-11b.IdentityLoader
+11b.Resolve agent config — merge trust-level tool defaults into allowed_tools
+11c.IdentityLoader
 12. AgentRuntime (receives IdentityLoader)
 13. Social Secretary processor + scheduler (if enabled)
 14. Gateway + TokenAuth (if enabled)
@@ -48,7 +49,13 @@ from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.providers.openai_provider import OpenAIProvider
 from openrattler.agents.runtime import AgentRuntime
 from openrattler.channels.base import ChannelAdapter
-from openrattler.config.loader import DEFAULT_CONFIG_PATH, AppConfig, ChannelConfig, load_config
+from openrattler.config.loader import (
+    DEFAULT_CONFIG_PATH,
+    AppConfig,
+    ChannelConfig,
+    ToolsConfig,
+    load_config,
+)
 from openrattler.identity.loader import RUNTIME_FILES, TEMPLATE_FILES, IdentityLoader
 from openrattler.tools.builtin.memory_tools import NarrativeMemoryTools
 from openrattler.gateway.auth import TokenAuth
@@ -383,6 +390,45 @@ class ApplicationContext:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_agent_tools
+# ---------------------------------------------------------------------------
+
+
+def _resolve_agent_tools(agent_config: AgentConfig, tools_config: ToolsConfig) -> AgentConfig:
+    """Return a copy of *agent_config* with trust-level tool defaults merged in.
+
+    Looks up the trust-level defaults from *tools_config* for the agent's
+    trust level, then unions them with the agent's explicit ``allowed_tools``
+    list.  The defaults come first so they establish a baseline; per-agent
+    entries follow, allowing extensions without repetition.  Duplicate names
+    are silently deduplicated (first occurrence wins).
+
+    Args:
+        agent_config:  The agent configuration to augment.
+        tools_config:  The tools configuration containing ``trust_defaults``.
+
+    Returns:
+        A new ``AgentConfig`` with the resolved ``allowed_tools`` list.
+
+    Security notes:
+    - This helper only adds tools; it never removes entries from the agent's
+      explicit ``allowed_tools`` list.
+    - The resulting list is still subject to the full permission check
+      (allowlist + trust-level) at call time — adding a tool name here does
+      not bypass ``check_permission``.
+    """
+    trust_key = agent_config.trust_level.value
+    defaults = tools_config.trust_defaults.get(trust_key, [])
+    seen: set[str] = set()
+    merged: list[str] = []
+    for tool_name in list(defaults) + list(agent_config.allowed_tools):
+        if tool_name not in seen:
+            seen.add(tool_name)
+            merged.append(tool_name)
+    return agent_config.model_copy(update={"allowed_tools": merged})
+
+
+# ---------------------------------------------------------------------------
 # build_application
 # ---------------------------------------------------------------------------
 
@@ -487,19 +533,31 @@ async def build_application(
     # 10. SocialTools.
     SocialTools(social_store, audit).register_all(registry)
 
-    # 10b. NarrativeMemoryTools.
+    # 10b. NarrativeMemoryTools — with MemoryStore and out-of-band security alert.
+    async def _on_security_alert(filename: str, reason: str) -> None:
+        logger.warning(
+            "SECURITY ALERT: write to %s was blocked by the memory security agent. " "Reason: %s",
+            filename,
+            reason,
+        )
+
     NarrativeMemoryTools(
         identity_dir=identity_dir,
         memory_config=config.memory,
         security_agent=mem_security_agent,
         audit=audit,
+        memory_store=memory_store,
+        on_security_alert=_on_security_alert,
     ).register_all(registry)
 
     # 11. LLM provider.
     llm_provider = provider or build_provider_from_env()
 
-    # 11b. IdentityLoader.
-    agent_config = config.agents.get("main", _DEFAULT_AGENT_CONFIG)
+    # 11b. Resolve agent config — merge trust-level tool defaults into allowed_tools.
+    raw_agent_config = config.agents.get("main", _DEFAULT_AGENT_CONFIG)
+    agent_config = _resolve_agent_tools(raw_agent_config, config.tools)
+
+    # 11c. IdentityLoader.
     identity_loader = IdentityLoader(
         identity_dir=identity_dir,
         agent_config=agent_config,
