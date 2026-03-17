@@ -12,6 +12,23 @@ from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.tools import ToolDefinition
 from openrattler.tools.registry import ToolRegistry
 
+
+def _make_app_config(
+    profile: str = "standard",
+    channels: dict[str, bool] | None = None,
+) -> MagicMock:
+    """Build a minimal AppConfig mock for loader tests."""
+    mock = MagicMock()
+    mock.security.profile = profile
+    ch: dict[str, MagicMock] = {}
+    for name, enabled in (channels or {}).items():
+        ch_mock = MagicMock()
+        ch_mock.enabled = enabled
+        ch[name] = ch_mock
+    mock.channels = ch
+    return mock
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -133,7 +150,7 @@ class TestContextSection:
     async def test_context_section_present(self, tmp_path: Path) -> None:
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert "Available Context" in prompt
+        assert "## Context" in prompt
 
     async def test_datetime_in_context(self, tmp_path: Path) -> None:
         loader = _make_loader(tmp_path)
@@ -159,7 +176,7 @@ class TestContextSection:
         config = _make_config(allowed=[])
         loader = _make_loader(tmp_path, config=config, registry=_make_registry())
         prompt = await loader.load_system_prompt()
-        assert "none" in prompt.lower()
+        assert "no tools currently permitted" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +249,229 @@ class TestPromptOrder:
         (tmp_path / "USER.md").write_text("USER_MARKER", encoding="utf-8")
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert prompt.index("USER_MARKER") < prompt.index("Available Context")
+        assert prompt.index("USER_MARKER") < prompt.index("## Context")
 
     async def test_context_before_memory(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("MEMORY_MARKER", encoding="utf-8")
         (tmp_path / "USER.md").write_text("user content", encoding="utf-8")
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert prompt.index("Available Context") < prompt.index("MEMORY_MARKER")
+        assert prompt.index("## Context") < prompt.index("MEMORY_MARKER")
+
+
+# ---------------------------------------------------------------------------
+# Workspace block
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceBlock:
+    async def test_workspace_path_in_prompt(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        # identity_dir.parent is the workspace path shown in the block.
+        assert str(tmp_path.parent) in prompt
+
+    async def test_agent_id_in_prompt(self, tmp_path: Path) -> None:
+        config = _make_config()
+        loader = _make_loader(tmp_path, config=config)
+        prompt = await loader.load_system_prompt()
+        assert "agent:main:main" in prompt
+
+    async def test_security_profile_from_config(self, tmp_path: Path) -> None:
+        app_cfg = _make_app_config(profile="paranoid")
+        loader = IdentityLoader(
+            identity_dir=tmp_path,
+            agent_config=_make_config(),
+            tool_registry=_make_registry(),
+            config=app_cfg,
+        )
+        prompt = await loader.load_system_prompt()
+        assert "paranoid" in prompt
+
+    async def test_security_profile_unknown_without_config(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "unknown" in prompt
+
+    async def test_init_date_read_from_file(self, tmp_path: Path) -> None:
+        (tmp_path / ".init_date").write_text("2025-01-15", encoding="utf-8")
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "2025-01-15" in prompt
+
+    async def test_init_date_unknown_when_absent(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        # No .init_date file — should show "unknown".
+        assert "unknown" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Channels block
+# ---------------------------------------------------------------------------
+
+
+class TestChannelsBlock:
+    async def test_channels_block_always_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "### Channels" in prompt
+
+    async def test_enabled_channel_listed(self, tmp_path: Path) -> None:
+        app_cfg = _make_app_config(channels={"slack": True})
+        loader = IdentityLoader(
+            identity_dir=tmp_path,
+            agent_config=_make_config(),
+            tool_registry=_make_registry(),
+            config=app_cfg,
+        )
+        prompt = await loader.load_system_prompt()
+        assert "slack" in prompt
+
+    async def test_disabled_channel_not_listed(self, tmp_path: Path) -> None:
+        app_cfg = _make_app_config(channels={"slack": False})
+        loader = IdentityLoader(
+            identity_dir=tmp_path,
+            agent_config=_make_config(),
+            tool_registry=_make_registry(),
+            config=app_cfg,
+        )
+        prompt = await loader.load_system_prompt()
+        assert "slack" not in prompt
+
+    async def test_no_channels_without_config(self, tmp_path: Path) -> None:
+        # Without AppConfig, no dynamic channel rows appear (only the CLI row).
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "### Channels" in prompt
+        assert "CLI" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tools block — trust level grouping
+# ---------------------------------------------------------------------------
+
+
+def _make_registry_multi() -> ToolRegistry:
+    """Registry with tools at three different trust levels."""
+    reg = ToolRegistry()
+    reg.register(
+        ToolDefinition(
+            name="public_tool",
+            description="Available to all",
+            parameters={"type": "object", "properties": {}, "required": []},
+            trust_level_required=TrustLevel.public,
+        )
+    )
+    reg.register(
+        ToolDefinition(
+            name="main_tool",
+            description="Needs main trust",
+            parameters={"type": "object", "properties": {}, "required": []},
+            trust_level_required=TrustLevel.main,
+        )
+    )
+    reg.register(
+        ToolDefinition(
+            name="local_tool",
+            description="Needs local trust",
+            parameters={"type": "object", "properties": {}, "required": []},
+            trust_level_required=TrustLevel.local,
+            requires_approval=True,
+        )
+    )
+    return reg
+
+
+def _make_local_agent_config(allowed: list[str]) -> AgentConfig:
+    """Agent config at local trust level — can use tools up to local trust."""
+    return AgentConfig(
+        agent_id="agent:main:main",
+        name="Main",
+        description="Test agent",
+        model="test-model",
+        trust_level=TrustLevel.local,
+        allowed_tools=allowed,
+    )
+
+
+class TestToolsBlock:
+    async def test_tools_grouped_by_trust_level(self, tmp_path: Path) -> None:
+        config = _make_local_agent_config(["public_tool", "main_tool", "local_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        assert "public_tool" in prompt
+        assert "main_tool" in prompt
+        assert "local_tool" in prompt
+
+    async def test_trust_level_headings_in_prompt(self, tmp_path: Path) -> None:
+        config = _make_config(allowed=["public_tool", "main_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        assert "`public` trust required" in prompt
+        assert "`main` trust required" in prompt
+
+    async def test_authorized_tiers_for_public(self, tmp_path: Path) -> None:
+        # public trust = all tiers authorized.
+        config = _make_config(allowed=["public_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        assert "`public`" in prompt
+        assert "`main`" in prompt
+        assert "`local`" in prompt
+        assert "`security`" in prompt
+
+    async def test_authorized_tiers_for_local(self, tmp_path: Path) -> None:
+        # local trust = only local + security authorized.
+        config = _make_local_agent_config(["local_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        # local and security appear in the authorized list for local_tool.
+        assert "`local` trust required" in prompt
+        # public and main should NOT appear as authorized for this group.
+        # (check via the "authorized:" suffix line for local group)
+        local_section_start = prompt.index("`local` trust required")
+        local_section = prompt[local_section_start : local_section_start + 200]
+        assert "`local`" in local_section
+        assert "`security`" in local_section
+
+    async def test_approval_flag_shown(self, tmp_path: Path) -> None:
+        config = _make_config(allowed=["local_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        assert "Yes" in prompt  # requires_approval=True tool.
+
+    async def test_no_approval_flag_for_normal_tool(self, tmp_path: Path) -> None:
+        config = _make_config(allowed=["main_tool"])
+        reg = _make_registry_multi()
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        assert "No" in prompt  # requires_approval=False (default).
+
+
+# ---------------------------------------------------------------------------
+# Security notes block
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityNotesBlock:
+    async def test_security_notes_always_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "### Security Notes" in prompt
+
+    async def test_profile_in_security_notes(self, tmp_path: Path) -> None:
+        app_cfg = _make_app_config(profile="minimal")
+        loader = IdentityLoader(
+            identity_dir=tmp_path,
+            agent_config=_make_config(),
+            tool_registry=_make_registry(),
+            config=app_cfg,
+        )
+        prompt = await loader.load_system_prompt()
+        assert "minimal" in prompt

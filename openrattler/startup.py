@@ -176,6 +176,8 @@ def _populate_identity_dir(identity_dir: Path) -> None:
       ``identity_dir``.  Existing user-customised copies are never overwritten.
     - Runtime files (USER.md, MEMORY.md) are created as empty files if absent.
       They are never overwritten or populated from a template.
+    - ``.init_date`` is written once on first population with the current UTC
+      date.  It is never overwritten on subsequent starts.
 
     Security notes:
     - USER.md is never created with content here — it is always populated
@@ -184,6 +186,8 @@ def _populate_identity_dir(identity_dir: Path) -> None:
     - Existing identity files are never overwritten — user customisations are
       preserved across restarts.
     """
+    from datetime import datetime, timezone
+
     from openrattler.identity.loader import _TEMPLATES_DIR
 
     for filename in TEMPLATE_FILES:
@@ -199,6 +203,10 @@ def _populate_identity_dir(identity_dir: Path) -> None:
         runtime_path = identity_dir / filename
         if not runtime_path.exists():
             runtime_path.write_text("", encoding="utf-8")
+
+    init_date_path = identity_dir / ".init_date"
+    if not init_date_path.exists():
+        init_date_path.write_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +504,7 @@ async def build_application(
         identity_dir=identity_dir,
         agent_config=agent_config,
         tool_registry=registry,
+        config=config,
     )
 
     # 12. AgentRuntime.
