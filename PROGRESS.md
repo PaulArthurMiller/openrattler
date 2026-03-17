@@ -1,5 +1,58 @@
 # OpenRattler — Build Progress
 
+## Build Piece 35.1 — Enhanced Context Generation ✅
+
+**Status:** Complete
+
+### Files Modified
+
+- `openrattler/identity/loader.py` — fully expanded context generation:
+  - New module-level constants: `_AGENT_TIERS`, `_TRUST_ORDER` (with `mcp` sentinel)
+  - `_authorized_tiers(trust_level_required)` — returns all agent tier names with rank ≥ required level
+  - `IdentityLoader.__init__` — added optional `config: AppConfig | None = None` parameter
+  - `_get_init_date()` — reads `.init_date` file; returns `"unknown"` if absent
+  - `_generate_context_section()` — expanded to 5 sub-sections via builder methods
+  - `_build_workspace_block()` — workspace path, agent ID, security profile, init date, current UTC datetime
+  - `_build_channels_block()` — CLI row always present; enabled channel rows added from AppConfig when available
+  - `_build_tools_block()` — tools grouped by `trust_level_required`, sorted ascending by privilege; each group shows tool name, description, and approval flag; "authorized agents" column lists tier names ≥ required level
+  - `_build_memory_block()` — memory system description (unchanged content, now a dedicated method)
+  - `_build_security_notes_block()` — active profile name + approval gate explanation
+- `openrattler/startup.py`:
+  - `_populate_identity_dir()` — now writes `.init_date` on first population (UTC date, never overwritten)
+  - `build_application()` — now passes `config=config` to `IdentityLoader`
+- `tests/test_identity/test_loader.py` — expanded from 23 to 42 tests:
+  - Fixed existing assertions: `"Available Context"` → `"## Context"`, `"none"` → `"no tools currently permitted"`
+  - Added `_make_app_config()` helper for mocking AppConfig in tests
+  - Added `_make_local_agent_config()` helper for tests requiring local-trust tools
+  - `TestWorkspaceBlock` (6 tests) — workspace path, agent_id, security profile (with/without config), init date (present/absent)
+  - `TestChannelsBlock` (4 tests) — always present, enabled/disabled channel visibility, no-config path
+  - `TestToolsBlock` (6 tests) — grouped display, trust level headings, authorized tiers for public/local, approval flag
+  - `TestSecurityNotesBlock` (2 tests) — always present, profile name from config
+
+### Test Results
+
+```
+1400 passed, 1 skipped in 22.20s  (19 new + 1381 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (71 source files) ✅
+- `pytest` — 1400 collected (+1 skipped), 1400 passed ✅
+
+### Design Decisions
+
+- **`CONTEXT.md` is never loaded from a file**: Always generated from live state (config, registry, `.init_date`). The `templates/CONTEXT.md` is a developer reference only, excluded from `TEMPLATE_FILES`.
+- **`.init_date` written once on first `_populate_identity_dir` call**: Never overwritten. Gives the agent a stable "first initialized" timestamp across restarts.
+- **Authorized tiers = rank ≥ required**: A tool requiring `main` trust lists `main`, `local`, and `security` as authorized tiers — the named agent registry doesn't exist yet, so trust level is the correct proxy.
+- **`config: AppConfig | None = None`**: Subagent loaders pass no config; they get a minimal context block with `unknown` for security profile and no channel rows.
+- **`mcp` excluded from `_AGENT_TIERS`**: MCP is a server tier, not an agent tier. Gets a high rank in `_TRUST_ORDER` to sort last if it ever appears, but never listed in the authorized tiers column.
+
+### Next Steps
+
+- **35.2** (or later): Wire `IdentityLoader.load_heartbeat_section()` into `ProcessorScheduler` so HEARTBEAT.md is injected into scheduled turns.
+
+---
+
 ## Build Piece 34.1 — Identity System (IdentityLoader + Narrative Memory Tools) ✅
 
 **Status:** Complete
