@@ -332,6 +332,36 @@ class MemoryConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class HeartbeatConfig(BaseModel):
+    """Configuration for the scheduled heartbeat check-in processor.
+
+    The heartbeat processor runs the main agent on a timer with HEARTBEAT.md
+    injected into the system prompt so the agent can review pending alerts
+    and working memory in a brief background turn.
+
+    Security notes:
+    - The heartbeat runs in a separate session (``agent:main:heartbeat``) so
+      it never races with the user's active CLI session.
+    - Disable the heartbeat (``enabled: false``) if the agent should only run
+      reactively.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the heartbeat processor is active. "
+            "Set to false to disable scheduled background check-ins."
+        ),
+    )
+    interval_minutes: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "How often (in minutes) the heartbeat turn runs. " "Default 60 (hourly). Minimum 1."
+        ),
+    )
+
+
 class ToolsConfig(BaseModel):
     """Trust-level tool allowlist defaults.
 
@@ -424,6 +454,13 @@ class AppConfig(BaseModel):
         description=(
             "Trust-level tool allowlist defaults. Tools listed here are merged "
             "into each agent's allowed_tools based on its trust level at startup."
+        ),
+    )
+    heartbeat: HeartbeatConfig = Field(
+        default_factory=HeartbeatConfig,
+        description=(
+            "Scheduled heartbeat check-in configuration. "
+            "Controls whether and how often the agent runs background self-checks."
         ),
     )
 
