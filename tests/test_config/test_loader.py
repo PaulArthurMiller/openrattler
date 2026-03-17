@@ -19,6 +19,7 @@ from openrattler.config.loader import (
     AppConfig,
     BudgetConfig,
     ChannelConfig,
+    HeartbeatConfig,
     MemoryConfig,
     SecurityConfig,
     ToolsConfig,
@@ -263,3 +264,43 @@ class TestToolsConfig:
         save_config(original, path)
         loaded = load_config(path)
         assert loaded.tools.trust_defaults["main"] == ["tool_a", "tool_b"]
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatConfig
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatConfig:
+    def test_default_enabled(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.enabled is True
+
+    def test_default_interval_minutes(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.interval_minutes == 60
+
+    def test_can_disable(self) -> None:
+        cfg = HeartbeatConfig(enabled=False)
+        assert cfg.enabled is False
+
+    def test_custom_interval(self) -> None:
+        cfg = HeartbeatConfig(interval_minutes=30)
+        assert cfg.interval_minutes == 30
+
+    def test_interval_minimum_one(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(interval_minutes=0)
+
+    def test_appconfig_has_heartbeat_field(self) -> None:
+        app = AppConfig()
+        assert isinstance(app.heartbeat, HeartbeatConfig)
+        assert app.heartbeat.enabled is True
+
+    def test_heartbeat_config_round_trips(self, tmp_path: Path) -> None:
+        path = tmp_path / "cfg.json"
+        original = AppConfig(heartbeat=HeartbeatConfig(enabled=False, interval_minutes=15))
+        save_config(original, path)
+        loaded = load_config(path)
+        assert loaded.heartbeat.enabled is False
+        assert loaded.heartbeat.interval_minutes == 15

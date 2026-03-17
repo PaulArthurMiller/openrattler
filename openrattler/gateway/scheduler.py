@@ -180,7 +180,14 @@ class ProcessorScheduler:
             )
 
     async def _dispatch_urgent_alerts(self, processor: ProactiveProcessor) -> None:
-        """Check pending output for ``immediate``-urgency items and call callback."""
+        """Check pending output for ``immediate``-urgency items and call callback.
+
+        Reads ``operation`` and ``params`` from each item via ``getattr`` so
+        that different processor types (social alerts, heartbeat responses, etc.)
+        can provide their own operation name and parameter set.  Falls back to
+        the social-alert defaults when those attributes are absent, preserving
+        backward compatibility with ``SocialAlert`` objects.
+        """
         if self._on_urgent_alert is None:
             return
         try:
@@ -189,19 +196,24 @@ class ProcessorScheduler:
             return
         for item in pending:
             if getattr(item, "urgency", None) == "immediate":
+                operation = getattr(item, "operation", "social_alert_urgent")
+                item_params = getattr(item, "params", None)
+                if item_params is None:
+                    # Fallback: extract social-alert fields directly from the item.
+                    item_params = {
+                        "alert_id": getattr(item, "id", ""),
+                        "summary": getattr(item, "summary", ""),
+                        "event_type": getattr(item, "event_type", ""),
+                        "person": getattr(item, "person", ""),
+                    }
                 msg = create_message(
                     from_agent=f"processor:{processor.processor_name}",
                     to_agent="agent:main:main",
                     session_key=_SCHEDULER_SESSION_KEY,
                     type="event",
-                    operation="social_alert_urgent",
+                    operation=operation,
                     trust_level="main",
-                    params={
-                        "alert_id": getattr(item, "id", ""),
-                        "summary": getattr(item, "summary", ""),
-                        "event_type": getattr(item, "event_type", ""),
-                        "person": getattr(item, "person", ""),
-                    },
+                    params=item_params,
                 )
                 await self._on_urgent_alert(msg)
 

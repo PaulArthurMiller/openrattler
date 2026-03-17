@@ -1,5 +1,70 @@
 # OpenRattler — Build Progress
 
+## Build Pieces 35.2 + 36.2 — Heartbeat Processor & Live Alert Surfacing ✅
+
+**Status:** Complete
+
+### Files Created
+
+- `openrattler/processors/heartbeat.py`:
+  - `HeartbeatOutput` dataclass — `urgency="immediate"`, `operation="heartbeat_response"`,
+    `params` property returning `{"summary": ..., "content": ...}`, unique `id` per instance
+  - `HeartbeatProcessor(ProactiveProcessor)` — wraps `AgentRuntime` + `IdentityLoader`;
+    `run_cycle()` loads HEARTBEAT.md, initialises a fresh session at `HEARTBEAT_SESSION_KEY`,
+    appends heartbeat section to system prompt, sends a synthetic `heartbeat_trigger` event,
+    stores non-trivial responses as pending `HeartbeatOutput`; errors caught and logged
+  - `HEARTBEAT_SESSION_KEY = "agent:main:heartbeat"` — isolated from CLI session
+  - `HEARTBEAT_OPERATION = "heartbeat_response"`
+- `tests/test_processors/test_heartbeat.py` — 28 tests across 4 classes
+
+### Files Modified
+
+- `openrattler/config/loader.py`:
+  - Added `HeartbeatConfig` model — `enabled: bool = True`, `interval_minutes: int = 60`
+  - Added `heartbeat: HeartbeatConfig` to `AppConfig`
+- `openrattler/gateway/scheduler.py` — `_dispatch_urgent_alerts` generalised:
+  - Reads `operation` and `params` via `getattr` from each pending item
+  - Falls back to social-alert defaults when absent — fully backward compatible
+- `openrattler/startup.py`:
+  - Added `sys` import; added `HeartbeatProcessor` + `HEARTBEAT_SESSION_KEY` imports
+  - **36.2** — `_on_security_alert` now prints `[SECURITY ALERT]` to `sys.stderr` (flush=True)
+    independently of the agent's conversation output
+  - **35.2 / 36.2** — Step 13 restructured: scheduler created when heartbeat OR SS enabled;
+    `_on_urgent_alert` callback prints `[HEARTBEAT]` or `[ALERT]` to stdout; passed to
+    `ProcessorScheduler`; heartbeat and SS processors registered when each is enabled
+- `tests/test_config/test_loader.py` — `TestHeartbeatConfig` (8 tests)
+- `tests/test_processors/test_social_integration.py` — `TestGeneralisedDispatch` (3 tests)
+- `tests/test_startup/test_startup.py` — updated SS-disabled test; added no-scheduler test
+
+### Test Results
+
+```
+1477 passed, 1 skipped in 22.36s  (34 new + 1443 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (72 source files) ✅
+- `pytest` — 1477 collected (+1 skipped), 1477 passed ✅
+
+### Design Decisions
+
+- **Isolated session key** (`agent:main:heartbeat`): heartbeat turns never race with the
+  user's CLI session; history accumulates separately for auditing.
+- **`HeartbeatOutput.params` is a `@property`**: matches `getattr` access pattern in the
+  scheduler; dict produced fresh each call, dataclass stays pure data.
+- **Scheduler created by default** (heartbeat is `enabled: True` by default): SS no longer
+  gatekeeps scheduler creation; opt-out via `"heartbeat": {"enabled": false}`.
+- **`_dispatch_urgent_alerts` fallback**: `SocialAlert` has no `operation`/`params` attrs;
+  `getattr` defaults preserve original social-alert behavior exactly.
+
+### Next Steps
+
+- **Future**: Wire `on_urgent_alert` into channel adapters (Telegram, SMS) for off-terminal
+  alerts.
+- **Future**: Add `HeartbeatConfig.active_hours` to restrict heartbeat to configured hours.
+
+---
+
 ## Build Piece 36.1 — Tool Permissions, Memory Tools Completion ✅
 
 **Status:** Complete

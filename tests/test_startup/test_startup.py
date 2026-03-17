@@ -87,6 +87,8 @@ class TestBuildApplication:
     async def test_social_secretary_disabled_by_default(
         self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
     ) -> None:
+        # Social Secretary is off by default, but the heartbeat is on by default,
+        # so a scheduler is still created.  The social_processor, however, is None.
         ctx = await build_application(
             workspace_dir=tmp_path / "ws",
             config_path=tmp_path / "cfg.json",
@@ -94,7 +96,8 @@ class TestBuildApplication:
             mcp_manifests_dir=empty_mcp_dir,
             start_gateway=False,
         )
-        assert ctx._scheduler is None
+        assert ctx._social_processor is None
+        assert ctx._scheduler is not None  # heartbeat creates scheduler
 
     async def test_social_secretary_enabled_creates_scheduler(
         self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
@@ -113,6 +116,25 @@ class TestBuildApplication:
             start_gateway=False,
         )
         assert ctx._scheduler is not None
+
+    async def test_heartbeat_disabled_and_no_ss_gives_no_scheduler(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        from openrattler.config.loader import HeartbeatConfig, save_config
+
+        cfg = AppConfig(heartbeat=HeartbeatConfig(enabled=False))
+        cfg_path = tmp_path / "cfg.json"
+        save_config(cfg, cfg_path)
+
+        ctx = await build_application(
+            workspace_dir=tmp_path / "ws",
+            config_path=cfg_path,
+            provider=stub_provider,
+            mcp_manifests_dir=empty_mcp_dir,
+            start_gateway=False,
+        )
+        assert ctx._scheduler is None
+        assert ctx._social_processor is None
 
     async def test_no_adapters_when_channels_empty(
         self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path

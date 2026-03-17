@@ -21,7 +21,7 @@ COMPONENT WIRING ORDER
 11b.Resolve agent config — merge trust-level tool defaults into allowed_tools
 11c.IdentityLoader
 12. AgentRuntime (receives IdentityLoader)
-13. Social Secretary processor + scheduler (if enabled)
+13. Scheduler + processors (heartbeat always if enabled; SS if enabled)
 14. Gateway + TokenAuth (if enabled)
 15. Channel adapters (enabled ones only)
 
@@ -41,6 +41,7 @@ import logging
 import os
 import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +68,7 @@ from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage
 from openrattler.models.sessions import Session
+from openrattler.processors.heartbeat import HEARTBEAT_SESSION_KEY, HeartbeatProcessor
 from openrattler.processors.social_secretary import SocialSecretaryProcessor
 from openrattler.security.memory_security import MemorySecurityAgent
 from openrattler.storage.audit import AuditLog
@@ -535,6 +537,14 @@ async def build_application(
 
     # 10b. NarrativeMemoryTools — with MemoryStore and out-of-band security alert.
     async def _on_security_alert(filename: str, reason: str) -> None:
+        # Print directly to stderr so the alert is visible in the terminal
+        # independently of the agent's conversation output (36.2).
+        print(
+            f"\n[SECURITY ALERT] Write to {filename} was blocked by the memory "
+            f"security agent.\nReason: {reason}\n",
+            file=sys.stderr,
+            flush=True,
+        )
         logger.warning(
             "SECURITY ALERT: write to %s was blocked by the memory security agent. " "Reason: %s",
             filename,
@@ -577,21 +587,51 @@ async def build_application(
         identity_loader=identity_loader,
     )
 
-    # 13. Social Secretary processor + scheduler (if enabled).
+    # 13. Scheduler + processors.
+    #     The scheduler is created whenever at least one processor is enabled.
+    #     Heartbeat is on by default; Social Secretary requires explicit config.
     scheduler: Optional[ProcessorScheduler] = None
     social_processor: Optional[SocialSecretaryProcessor] = None
 
+    heartbeat_cfg = config.heartbeat
     ss_config = config.social_secretary
-    if ss_config.enabled:
-        social_processor = SocialSecretaryProcessor(
-            config=ss_config,
-            social_store=social_store,
-            mcp_manager=mcp_manager,
-            provider=llm_provider,
-            audit=audit,
-        )
-        scheduler = ProcessorScheduler(audit=audit)
-        scheduler.register_processor(social_processor, ss_config.cycle_interval_minutes)
+
+    if heartbeat_cfg.enabled or ss_config.enabled:
+
+        async def _on_urgent_alert(msg: UniversalMessage) -> None:
+            operation = msg.operation
+            params = msg.params
+            if operation == "heartbeat_response":
+                content = params.get("content", params.get("summary", ""))
+                if content:
+                    print(f"\n[HEARTBEAT] {content}\n", flush=True)
+            else:
+                summary = params.get("summary", "")
+                person = params.get("person", "")
+                label = f"{person}: " if person else ""
+                print(f"\n[ALERT] {label}{summary}\n", flush=True)
+            logger.info("Urgent alert dispatched: operation=%s", operation)
+
+        scheduler = ProcessorScheduler(audit=audit, on_urgent_alert=_on_urgent_alert)
+
+        if heartbeat_cfg.enabled:
+            heartbeat_processor = HeartbeatProcessor(
+                runtime=runtime,
+                identity_loader=identity_loader,
+                session_key=HEARTBEAT_SESSION_KEY,
+                audit=audit,
+            )
+            scheduler.register_processor(heartbeat_processor, heartbeat_cfg.interval_minutes)
+
+        if ss_config.enabled:
+            social_processor = SocialSecretaryProcessor(
+                config=ss_config,
+                social_store=social_store,
+                mcp_manager=mcp_manager,
+                provider=llm_provider,
+                audit=audit,
+            )
+            scheduler.register_processor(social_processor, ss_config.cycle_interval_minutes)
 
     # 14. Gateway (optional).
     gateway: Optional[Gateway] = None

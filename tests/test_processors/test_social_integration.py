@@ -617,6 +617,79 @@ class TestUrgentNotification:
 
 
 # ---------------------------------------------------------------------------
+# TestGeneralisedDispatch — operation/params forwarding (Build 35.2)
+# ---------------------------------------------------------------------------
+
+
+class TestGeneralisedDispatch:
+    """Verify that _dispatch_urgent_alerts reads operation/params from items
+    generically, staying backward-compatible with SocialAlert objects."""
+
+    async def test_social_alert_uses_default_operation(self) -> None:
+        """SocialAlert (no operation attr) still produces social_alert_urgent."""
+        received: list[Any] = []
+
+        async def callback(msg: Any) -> None:
+            received.append(msg)
+
+        alert = _make_alert(urgency="immediate")
+        proc = _OkProcessor(cycle_count=1, pending=[alert])
+        scheduler = ProcessorScheduler(on_urgent_alert=callback)
+        await scheduler._run_processor_cycle(proc)
+
+        assert received[0].operation == "social_alert_urgent"
+
+    async def test_item_with_operation_uses_provided_operation(self) -> None:
+        """An item that provides operation= is forwarded as-is."""
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class CustomOutput:
+            urgency: str = "immediate"
+            operation: str = "my_custom_op"
+
+            @property
+            def params(self) -> dict[str, str]:
+                return {"custom_key": "custom_value"}
+
+        received: list[Any] = []
+
+        async def callback(msg: Any) -> None:
+            received.append(msg)
+
+        proc = _OkProcessor(cycle_count=1, pending=[CustomOutput()])
+        scheduler = ProcessorScheduler(on_urgent_alert=callback)
+        await scheduler._run_processor_cycle(proc)
+
+        assert received[0].operation == "my_custom_op"
+        assert received[0].params["custom_key"] == "custom_value"
+
+    async def test_item_with_params_property_forwarded(self) -> None:
+        """An item's params property dict is forwarded to the UniversalMessage."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class OutputWithParams:
+            urgency: str = "immediate"
+            operation: str = "test_op"
+
+            @property
+            def params(self) -> dict[str, str]:
+                return {"key": "val"}
+
+        received: list[Any] = []
+
+        async def callback(msg: Any) -> None:
+            received.append(msg)
+
+        proc = _OkProcessor(cycle_count=1, pending=[OutputWithParams()])
+        scheduler = ProcessorScheduler(on_urgent_alert=callback)
+        await scheduler._run_processor_cycle(proc)
+
+        assert received[0].params["key"] == "val"
+
+
+# ---------------------------------------------------------------------------
 # 7. TestConfigIntegration
 # ---------------------------------------------------------------------------
 
