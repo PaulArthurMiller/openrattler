@@ -47,8 +47,17 @@ import re
 SUSPICIOUS_PATTERNS: list[tuple[str, str]] = [
     # ------------------------------------------------------------------
     # Command injection — attempts to embed execution in input/output
+    # Require shell/function-call context to avoid false positives on
+    # everyday words like "system" or "exec" in natural language.
     # ------------------------------------------------------------------
-    ("command_injection", r"\b(?:exec|system|subprocess|os\.popen)\b"),
+    # Function-call syntax: system(...), exec(...), eval(...)
+    ("command_injection", r"\b(?:exec|system|eval)\s*\("),
+    # os module execution calls (already context-specific via the dot)
+    ("command_injection", r"os\.(?:system|popen|exec[lve]{0,2})"),
+    # subprocess is specific enough; flag it regardless of context
+    ("command_injection", r"\bsubprocess\b"),
+    # Shell pipe/semicolon injection: ; system cmd, | exec cmd
+    ("command_injection", r"[;|&]\s*(?:exec|system)\b"),
     # ------------------------------------------------------------------
     # Destructive commands — data/storage destruction
     # ------------------------------------------------------------------

@@ -28,6 +28,7 @@ SECURITY
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Optional
 
 import anthropic
@@ -84,8 +85,28 @@ def _convert_messages(
         if role == "system":
             if content:
                 system_parts.append(content)
-        elif role in ("user", "assistant"):
-            converted.append({"role": role, "content": content})
+        elif role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                # Convert OpenAI tool_calls to Anthropic tool_use content blocks.
+                content_blocks: list[dict[str, Any]] = []
+                if content:
+                    content_blocks.append({"type": "text", "text": content})
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    raw_args = fn.get("arguments", "{}")
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": fn.get("name", ""),
+                        "input": args,
+                    })
+                converted.append({"role": "assistant", "content": content_blocks})
+            else:
+                converted.append({"role": "assistant", "content": content})
+        elif role == "user":
+            converted.append({"role": "user", "content": content})
         elif role == "tool":
             # Tool results become a user message with tool_result content.
             converted.append(
