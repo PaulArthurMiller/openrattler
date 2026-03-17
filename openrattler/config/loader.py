@@ -317,6 +317,58 @@ class MemoryConfig(BaseModel):
             "Default 500. USER.md is always a full replace."
         ),
     )
+    identity_max_tokens: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Maximum size of IDENTITY.md in approximate tokens (chars ÷ 4). "
+            "Default 500. IDENTITY.md is always a full replace."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ToolsConfig
+# ---------------------------------------------------------------------------
+
+
+class ToolsConfig(BaseModel):
+    """Trust-level tool allowlist defaults.
+
+    Tools listed under a trust level are automatically added to the
+    ``allowed_tools`` list of any agent running at that trust level.
+    Individual ``AgentConfig.allowed_tools`` entries extend (not replace)
+    these defaults — they are merged at startup before the runtime is built.
+
+    Security notes:
+    - Only tools that are also registered in the ``ToolRegistry`` will
+      actually be available; listing an unknown tool name here is harmless.
+    - The merge is additive only — tools are never removed from an agent's
+      explicit ``allowed_tools`` list by these defaults.
+    - Changing this config does not bypass trust-level permission checks;
+      each tool still enforces its own ``trust_level_required`` at call time.
+    """
+
+    trust_defaults: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "public": [],
+            "mcp": [],
+            "main": [
+                "update_memory_narrative",
+                "update_user_profile",
+                "update_identity",
+                "memory_read",
+                "memory_write",
+            ],
+            "local": [],
+            "security": [],
+        },
+        description=(
+            "Tools automatically permitted for agents at each trust level. "
+            "Keys are trust level names ('public', 'mcp', 'main', 'local', 'security'). "
+            "Per-agent allowed_tools extend these defaults without replacing them."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +418,13 @@ class AppConfig(BaseModel):
     memory: MemoryConfig = Field(
         default_factory=MemoryConfig,
         description="Narrative memory (MEMORY.md) and user profile (USER.md) size limits.",
+    )
+    tools: ToolsConfig = Field(
+        default_factory=ToolsConfig,
+        description=(
+            "Trust-level tool allowlist defaults. Tools listed here are merged "
+            "into each agent's allowed_tools based on its trust level at startup."
+        ),
     )
 
 

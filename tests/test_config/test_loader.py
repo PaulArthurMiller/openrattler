@@ -19,7 +19,9 @@ from openrattler.config.loader import (
     AppConfig,
     BudgetConfig,
     ChannelConfig,
+    MemoryConfig,
     SecurityConfig,
+    ToolsConfig,
     load_config,
     save_config,
 )
@@ -201,3 +203,63 @@ class TestSaveConfig:
         loaded = load_config(path)
         assert loaded.agents["main"].agent_id == "agent:main:main"
         assert loaded.agents["main"].trust_level == TrustLevel.main
+
+
+# ---------------------------------------------------------------------------
+# MemoryConfig
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryConfig:
+    def test_default_identity_max_tokens(self) -> None:
+        cfg = MemoryConfig()
+        assert cfg.identity_max_tokens == 500
+
+    def test_custom_identity_max_tokens(self) -> None:
+        cfg = MemoryConfig(identity_max_tokens=800)
+        assert cfg.identity_max_tokens == 800
+
+    def test_identity_max_tokens_minimum_one(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            MemoryConfig(identity_max_tokens=0)
+
+
+# ---------------------------------------------------------------------------
+# ToolsConfig
+# ---------------------------------------------------------------------------
+
+
+class TestToolsConfig:
+    def test_default_main_tools_present(self) -> None:
+        cfg = ToolsConfig()
+        main_tools = cfg.trust_defaults["main"]
+        assert "update_memory_narrative" in main_tools
+        assert "update_user_profile" in main_tools
+        assert "update_identity" in main_tools
+        assert "memory_read" in main_tools
+        assert "memory_write" in main_tools
+
+    def test_default_public_tools_empty(self) -> None:
+        cfg = ToolsConfig()
+        assert cfg.trust_defaults["public"] == []
+
+    def test_custom_trust_defaults_accepted(self) -> None:
+        cfg = ToolsConfig(trust_defaults={"main": ["some_tool"], "local": ["other_tool"]})
+        assert cfg.trust_defaults["main"] == ["some_tool"]
+        assert cfg.trust_defaults["local"] == ["other_tool"]
+
+    def test_appconfig_includes_tools_field(self) -> None:
+        app = AppConfig()
+        assert isinstance(app.tools, ToolsConfig)
+        assert "main" in app.tools.trust_defaults
+
+    def test_tools_config_round_trips_via_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.json"
+        original = AppConfig(
+            tools=ToolsConfig(trust_defaults={"main": ["tool_a", "tool_b"], "local": []})
+        )
+        save_config(original, path)
+        loaded = load_config(path)
+        assert loaded.tools.trust_defaults["main"] == ["tool_a", "tool_b"]

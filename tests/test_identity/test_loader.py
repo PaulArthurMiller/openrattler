@@ -118,27 +118,27 @@ class TestBootstrapDetection:
     async def test_bootstrap_injected_when_user_md_absent(self, tmp_path: Path) -> None:
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        # BOOTSTRAP.md content contains "First-Run Setup".
-        assert "First-Run Setup" in prompt
+        # BOOTSTRAP.md content contains this phrase in the new template.
+        assert "No memory yet" in prompt
 
     async def test_bootstrap_injected_when_user_md_empty(self, tmp_path: Path) -> None:
         (tmp_path / "USER.md").write_text("   \n  ", encoding="utf-8")
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert "First-Run Setup" in prompt
+        assert "No memory yet" in prompt
 
     async def test_user_md_injected_when_populated(self, tmp_path: Path) -> None:
         (tmp_path / "USER.md").write_text("Name: Alice\nTimezone: UTC", encoding="utf-8")
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
         assert "Alice" in prompt
-        assert "First-Run Setup" not in prompt
+        assert "No memory yet" not in prompt
 
     async def test_bootstrap_not_injected_once_user_md_has_content(self, tmp_path: Path) -> None:
         (tmp_path / "USER.md").write_text("Anything meaningful.", encoding="utf-8")
         loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert "First-Run Setup" not in prompt
+        assert "No memory yet" not in prompt
 
 
 # ---------------------------------------------------------------------------

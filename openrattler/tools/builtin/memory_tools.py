@@ -1,12 +1,15 @@
-"""Narrative memory tools — update_memory_narrative and update_user_profile.
+"""Narrative memory tools — update_memory_narrative, update_user_profile,
+update_identity, memory_read, and memory_write.
 
-These tools give the agent write access to its two runtime identity files:
+These tools give the agent write access to its runtime identity files and
+structured memory store:
 
 - ``MEMORY.md``   — free-form working memory narrative (append or replace)
 - ``USER.md``     — structured user profile (always a full replace)
+- ``IDENTITY.md`` — operational identity: name, creature, vibe (always a full replace)
+- ``memory.json`` — structured key-value fact store (read/write via MemoryStore)
 
-Both files live in the workspace identity directory
-(``~/.openrattler/identity/``).  All writes are:
+All file writes are:
 
 1. Validated against token limits (approximated as ``len(text) // 4``).
 2. Reviewed by ``MemorySecurityAgent`` before touching disk.
@@ -17,8 +20,9 @@ TOKEN LIMITS
 - ``narrative_max_write_tokens`` caps the size of a single write to MEMORY.md.
 - ``narrative_max_tokens`` caps the total size of MEMORY.md.
 - ``user_profile_max_tokens`` caps the total size of USER.md.
+- ``identity_max_tokens`` caps the total size of IDENTITY.md.
 
-Limits come from ``MemoryConfig`` (default: 300 write / 2000 file / 500 user).
+Limits come from ``MemoryConfig`` (defaults: 300 write / 2000 file / 500 user / 500 identity).
 The tool response always reports current token usage so the agent knows when
 to prune.  Near-80% capacity triggers an explicit pruning suggestion.
 
@@ -30,14 +34,19 @@ SECURITY NOTES
   never leaves a corrupt file.
 - ``agent_id`` and ``session_key`` passed to the security review are fixed at
   construction time; they cannot be influenced by the LLM's tool arguments.
+- When a write is blocked, the optional ``on_security_alert`` callback fires
+  independently of the tool response so the alert reaches the user even if
+  the agent does not surface it in conversation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from openrattler.models.agents import TrustLevel
 from openrattler.models.tools import ToolDefinition
@@ -46,6 +55,7 @@ if TYPE_CHECKING:
     from openrattler.config.loader import MemoryConfig
     from openrattler.security.memory_security import MemorySecurityAgent
     from openrattler.storage.audit import AuditLog
+    from openrattler.storage.memory import MemoryStore
     from openrattler.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -102,18 +112,27 @@ class NarrativeMemoryTools:
     """Container for narrative memory tools registered with the tool registry.
 
     Args:
-        identity_dir:   Path to the runtime identity directory
-                        (``~/.openrattler/identity/``).
-        memory_config:  Token limits for MEMORY.md and USER.md.
-        security_agent: Gatekeeper that reviews all writes before they persist.
-        audit:          Audit log (passed through to the security agent which
-                        logs its own review events).
+        identity_dir:       Path to the runtime identity directory
+                            (``~/.openrattler/identity/``).
+        memory_config:      Token limits for MEMORY.md, USER.md, and IDENTITY.md.
+        security_agent:     Gatekeeper that reviews all writes before they persist.
+        audit:              Audit log (passed through to the security agent which
+                            logs its own review events).
+        memory_store:       Optional MemoryStore for memory_read / memory_write tools.
+                            When ``None``, those tools are not registered.
+        on_security_alert:  Optional async callback invoked when a write is blocked
+                            by the security agent.  Receives ``(filename, reason)``
+                            so the caller can surface the event out-of-band from the
+                            agent's tool response.
 
     Security notes:
     - ``security_agent`` is captured at construction time and cannot be
       replaced or bypassed by the LLM's tool arguments.
-    - Both tools are registered explicitly (not via ``@tool``) because they
+    - All tools are registered explicitly (not via ``@tool``) because they
       require a bound ``identity_dir`` and ``security_agent`` instance.
+    - ``on_security_alert`` fires independently of the tool response; even if
+      an agent suppresses the error message in conversation, the alert still
+      reaches the registered handler.
     """
 
     def __init__(
@@ -122,11 +141,15 @@ class NarrativeMemoryTools:
         memory_config: "MemoryConfig",
         security_agent: "MemorySecurityAgent",
         audit: "AuditLog",
+        memory_store: Optional["MemoryStore"] = None,
+        on_security_alert: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
         self._identity_dir = identity_dir
         self._config = memory_config
         self._security_agent = security_agent
         self._audit = audit
+        self._memory_store = memory_store
+        self._on_security_alert = on_security_alert
 
     # ------------------------------------------------------------------
     # Registration
@@ -206,6 +229,100 @@ class NarrativeMemoryTools:
             ),
             self._update_user_profile,
         )
+        registry.register(
+            ToolDefinition(
+                name="update_identity",
+                description=(
+                    "Replace the agent's operational identity file (IDENTITY.md) with "
+                    "updated content. Use this after the bootstrap conversation to record "
+                    "the agent's name, creature, vibe, and emoji. Always rewrites the "
+                    "entire file — include all identity information, not just changes."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": (
+                                "The complete new contents of IDENTITY.md in Markdown. "
+                                "Include name, creature, vibe, emoji, and any other "
+                                "identity details established during the bootstrap conversation."
+                            ),
+                        },
+                    },
+                    "required": ["content"],
+                },
+                trust_level_required=TrustLevel.main,
+                requires_approval=False,
+                security_notes=(
+                    "All writes pass through MemorySecurityAgent pattern scan. "
+                    "Atomic write (temp + rename). Token limit enforced before review."
+                ),
+            ),
+            self._update_identity,
+        )
+        if self._memory_store is not None:
+            registry.register(
+                ToolDefinition(
+                    name="memory_read",
+                    description=(
+                        "Read from the structured memory store (memory.json). "
+                        "Omit 'key' to read the entire store. Provide a top-level "
+                        "'key' to read a single field (e.g. 'facts', 'preferences')."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": (
+                                    "Optional top-level key to read. "
+                                    "If omitted, the entire memory store is returned."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                    trust_level_required=TrustLevel.main,
+                    requires_approval=False,
+                    security_notes=(
+                        "Read-only. No security review needed — returns stored data only."
+                    ),
+                ),
+                self._memory_read,
+            )
+            registry.register(
+                ToolDefinition(
+                    name="memory_write",
+                    description=(
+                        "Write structured facts to the memory store (memory.json). "
+                        "Provide a JSON object of top-level key-value pairs to set. "
+                        "Existing keys not mentioned are preserved. "
+                        'Example: \'{"facts": {"name": "Paul"}, "bootstrap_complete": true}\''
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "changes_json": {
+                                "type": "string",
+                                "description": (
+                                    "A JSON-encoded object of top-level key-value changes "
+                                    "to apply to the memory store. Must be a valid JSON object. "
+                                    "The 'history' key is reserved and will be ignored."
+                                ),
+                            },
+                        },
+                        "required": ["changes_json"],
+                    },
+                    trust_level_required=TrustLevel.main,
+                    requires_approval=False,
+                    security_notes=(
+                        "All writes pass through MemorySecurityAgent pattern scan before "
+                        "touching disk. The 'history' key cannot be overwritten by callers."
+                    ),
+                ),
+                self._memory_write,
+            )
 
     # ------------------------------------------------------------------
     # Tool handlers
@@ -266,7 +383,9 @@ class NarrativeMemoryTools:
             session_key=_TOOLS_SESSION_KEY,
         )
         if security_result.suspicious:
-            return f"Error: write blocked by security review. " f"Reason: {security_result.reason}"
+            if self._on_security_alert is not None:
+                await self._on_security_alert("MEMORY.md", security_result.reason or "")
+            return f"Error: write blocked by security review. Reason: {security_result.reason}"
 
         # Atomic write
         try:
@@ -317,7 +436,9 @@ class NarrativeMemoryTools:
             session_key=_TOOLS_SESSION_KEY,
         )
         if security_result.suspicious:
-            return f"Error: write blocked by security review. " f"Reason: {security_result.reason}"
+            if self._on_security_alert is not None:
+                await self._on_security_alert("USER.md", security_result.reason or "")
+            return f"Error: write blocked by security review. Reason: {security_result.reason}"
 
         # Atomic write
         try:
@@ -327,6 +448,122 @@ class NarrativeMemoryTools:
 
         total_tokens = _approx_tokens(new_content)
         return self._status_message("USER.md", total_tokens, max_tokens)
+
+    async def _update_identity(self, content: str) -> str:
+        """Handler for update_identity.
+
+        Always replaces IDENTITY.md entirely.  Validates token limit, runs
+        security review, writes atomically.
+
+        Args:
+            content: The complete new contents of IDENTITY.md.
+
+        Returns:
+            A status string reporting token usage and any warnings.
+        """
+        max_tokens = self._config.identity_max_tokens
+        write_tokens = _approx_tokens(content)
+
+        if write_tokens > max_tokens:
+            return (
+                f"Error: content is approximately {write_tokens} tokens, "
+                f"exceeding the IDENTITY.md limit of {max_tokens}. "
+                f"Please shorten the identity and try again."
+            )
+
+        identity_path = self._identity_dir / "IDENTITY.md"
+        current_content = ""
+        if identity_path.exists():
+            try:
+                current_content = identity_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+
+        new_content = content.strip()
+
+        # Security review
+        diff = self._build_diff(current_content, new_content, "replace")
+        security_result = await self._security_agent.review_memory_change(
+            agent_id="main",
+            diff=diff,
+            session_key=_TOOLS_SESSION_KEY,
+        )
+        if security_result.suspicious:
+            if self._on_security_alert is not None:
+                await self._on_security_alert("IDENTITY.md", security_result.reason or "")
+            return f"Error: write blocked by security review. Reason: {security_result.reason}"
+
+        # Atomic write
+        try:
+            await asyncio.to_thread(_atomic_write, identity_path, new_content)
+        except OSError as exc:
+            return f"Error: failed to write IDENTITY.md: {exc}"
+
+        total_tokens = _approx_tokens(new_content)
+        return self._status_message("IDENTITY.md", total_tokens, max_tokens)
+
+    async def _memory_read(self, key: str = "") -> str:
+        """Handler for memory_read.
+
+        Reads from the structured memory store.  Returns the entire store when
+        *key* is absent or empty, or a single top-level field when *key* is provided.
+
+        Args:
+            key: Optional top-level key to read.  Empty string returns the whole store.
+
+        Returns:
+            JSON string of the requested data, or an error message.
+        """
+        if self._memory_store is None:
+            return "Error: memory store is not available."
+        try:
+            data = await self._memory_store.load("main")
+        except Exception as exc:
+            return f"Error: could not read memory store: {exc}"
+
+        if key:
+            if key not in data:
+                return f"Key '{key}' not found in memory store."
+            return json.dumps(data[key], indent=2, default=str)
+        return json.dumps(data, indent=2, default=str)
+
+    async def _memory_write(self, changes_json: str) -> str:
+        """Handler for memory_write.
+
+        Parses *changes_json* as a JSON object and applies the changes to the
+        structured memory store via ``MemoryStore.apply_changes_with_review``.
+        The security agent reviews the diff before any write touches disk.
+
+        Args:
+            changes_json: JSON-encoded object of top-level key-value changes.
+
+        Returns:
+            A status string, or an error message.
+        """
+        if self._memory_store is None:
+            return "Error: memory store is not available."
+
+        try:
+            changes = json.loads(changes_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: changes_json is not valid JSON: {exc}"
+
+        if not isinstance(changes, dict):
+            return "Error: changes_json must be a JSON object (dict), not a list or scalar."
+
+        ok, reason = await self._memory_store.apply_changes_with_review(
+            agent_id="main",
+            changes=changes,
+            session_key=_TOOLS_SESSION_KEY,
+            security_agent=self._security_agent,
+        )
+        if not ok:
+            if self._on_security_alert is not None:
+                await self._on_security_alert("memory.json", reason or "")
+            return f"Error: write blocked by security review. Reason: {reason}"
+
+        keys_written = [k for k in changes if k != "history"]
+        return f"Written. Updated keys: {', '.join(keys_written) or '(none)'}."
 
     # ------------------------------------------------------------------
     # Helpers
