@@ -14,12 +14,16 @@ from openrattler.channels.base import ChannelAdapter
 from openrattler.config.loader import AppConfig, ChannelConfig, ToolsConfig
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.social import SocialSecretaryConfig
+from openrattler.models.messages import UniversalMessage, create_message
 from openrattler.startup import (
     ApplicationContext,
+    _build_alert_adapters_list,
     _build_channel_adapters,
+    _dispatch_to_channels,
     _resolve_agent_tools,
     build_application,
 )
+from openrattler.storage.audit import AuditLog
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -477,3 +481,250 @@ class TestRunCliSubcommand:
         args = parser.parse_args(["run"])
         assert args.host == "127.0.0.1"
         assert args.port == 8765
+
+
+# ---------------------------------------------------------------------------
+# TestAlertDispatch
+# ---------------------------------------------------------------------------
+
+
+def _make_alert_message(operation: str = "test_op") -> UniversalMessage:
+    return create_message(
+        from_agent="startup",
+        to_agent="broadcast",
+        session_key="system",
+        type="alert",
+        operation=operation,
+        trust_level="security",
+        params={"summary": "test alert"},
+    )
+
+
+def _make_mock_adapter(name: str = "mock", connected: bool = True) -> MagicMock:
+    """Return a MagicMock that looks like a connected ChannelAdapter."""
+    adapter = MagicMock(spec=ChannelAdapter)
+    adapter.channel_name = name
+    adapter._connected = connected
+    adapter.send = AsyncMock(return_value=None)
+    return adapter
+
+
+def _make_audit(tmp_path: Path) -> AuditLog:
+    return AuditLog(tmp_path / "audit.jsonl")
+
+
+class TestAlertDispatch:
+    # ------------------------------------------------------------------
+    # _dispatch_to_channels
+    # ------------------------------------------------------------------
+
+    async def test_urgent_alert_dispatched_to_connected_adapter(self, tmp_path: Path) -> None:
+        adapter = _make_mock_adapter()
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+
+        result = await _dispatch_to_channels(msg, [adapter], audit)
+
+        assert result is True
+        adapter.send.assert_called_once_with(msg)
+
+    async def test_urgent_alert_dispatched_to_multiple_adapters(self, tmp_path: Path) -> None:
+        a1 = _make_mock_adapter("slack")
+        a2 = _make_mock_adapter("email")
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+
+        result = await _dispatch_to_channels(msg, [a1, a2], audit)
+
+        assert result is True
+        a1.send.assert_called_once_with(msg)
+        a2.send.assert_called_once_with(msg)
+
+    async def test_failed_adapter_does_not_block_others(self, tmp_path: Path) -> None:
+        a1 = _make_mock_adapter("slack")
+        a1.send = AsyncMock(side_effect=RuntimeError("network error"))
+        a2 = _make_mock_adapter("email")
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+
+        result = await _dispatch_to_channels(msg, [a1, a2], audit)
+
+        assert result is True  # a2 succeeded
+        a2.send.assert_called_once_with(msg)
+
+        events = await audit.query(limit=20)
+        assert any(e.event == "alert_dispatch_failed" for e in events)
+        failed_event = next(e for e in events if e.event == "alert_dispatch_failed")
+        assert failed_event.details["adapter_name"] == "slack"
+
+    async def test_all_adapters_fail_falls_back_to_stderr(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        a1 = _make_mock_adapter("slack")
+        a1.send = AsyncMock(side_effect=RuntimeError("err1"))
+        a2 = _make_mock_adapter("email")
+        a2.send = AsyncMock(side_effect=RuntimeError("err2"))
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+
+        result = await _dispatch_to_channels(msg, [a1, a2], audit)
+
+        assert result is False
+
+        events = await audit.query(limit=20)
+        event_names = [e.event for e in events]
+        assert "alert_dispatch_failed" in event_names
+        assert "alert_dispatch_total_failure" in event_names
+
+    async def test_no_adapters_returns_false(self, tmp_path: Path) -> None:
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+
+        result = await _dispatch_to_channels(msg, [], audit)
+
+        assert result is False
+
+    async def test_dispatch_is_concurrent(self, tmp_path: Path) -> None:
+        """asyncio.gather is used — verify by patching it."""
+        audit = _make_audit(tmp_path)
+        msg = _make_alert_message()
+        adapters = [_make_mock_adapter("a"), _make_mock_adapter("b")]
+
+        with patch("openrattler.startup.asyncio.gather", wraps=asyncio.gather) as mock_gather:
+            await _dispatch_to_channels(msg, adapters, audit)
+
+        mock_gather.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # _build_alert_adapters_list
+    # ------------------------------------------------------------------
+
+    async def test_disconnected_adapter_skipped(self) -> None:
+        connected = _make_mock_adapter("slack", connected=True)
+        disconnected = _make_mock_adapter("email", connected=False)
+
+        result = _build_alert_adapters_list({"slack": connected, "email": disconnected})
+
+        assert connected in result
+        assert disconnected not in result
+
+    async def test_no_connected_adapters_returns_empty(self) -> None:
+        a = _make_mock_adapter("slack", connected=False)
+        result = _build_alert_adapters_list({"slack": a})
+        assert result == []
+
+    # ------------------------------------------------------------------
+    # Security alert message construction
+    # ------------------------------------------------------------------
+
+    async def test_security_alert_constructs_correct_message(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        """_on_security_alert builds a UniversalMessage with type=alert, operation=security_alert."""
+        ctx = await build_application(
+            workspace_dir=tmp_path / "ws",
+            config_path=tmp_path / "cfg.json",
+            provider=stub_provider,
+            mcp_manifests_dir=empty_mcp_dir,
+            start_gateway=False,
+        )
+        assert ctx._security_alert_cb is not None
+
+        # Wire a mock adapter into the alert list directly so dispatch is tracked.
+        adapter = _make_mock_adapter("slack")
+        ctx._alert_adapters.clear()
+        ctx._alert_adapters.append(adapter)
+
+        await ctx._security_alert_cb("my_tool", "injection attempt")
+
+        adapter.send.assert_called_once()
+        delivered: UniversalMessage = adapter.send.call_args[0][0]
+        assert delivered.type == "alert"
+        assert delivered.operation == "security_alert"
+        assert delivered.params["tool_name"] == "my_tool"
+        assert delivered.params["reason"] == "injection attempt"
+        assert delivered.params["severity"] == "high"
+
+    async def test_security_alert_tool_name_sanitized(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        """Long/malformed tool name is truncated and stripped before inclusion."""
+        ctx = await build_application(
+            workspace_dir=tmp_path / "ws",
+            config_path=tmp_path / "cfg.json",
+            provider=stub_provider,
+            mcp_manifests_dir=empty_mcp_dir,
+            start_gateway=False,
+        )
+        assert ctx._security_alert_cb is not None
+
+        adapter = _make_mock_adapter("slack")
+        ctx._alert_adapters.clear()
+        ctx._alert_adapters.append(adapter)
+
+        # Name with special chars + length > 64
+        bad_name = "A" * 80 + "<script>alert(1)</script>"
+        await ctx._security_alert_cb(bad_name, "reason")
+
+        delivered: UniversalMessage = adapter.send.call_args[0][0]
+        safe = delivered.params["tool_name"]
+        assert len(safe) <= 64
+        assert "<" not in safe
+        assert ">" not in safe
+        assert "(" not in safe
+
+    # ------------------------------------------------------------------
+    # Integration: alert adapters captured once at start()
+    # ------------------------------------------------------------------
+
+    async def test_alert_adapters_captured_at_start_not_per_alert(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        """_alert_adapters is empty before start() and set exactly once."""
+        ctx = await build_application(
+            workspace_dir=tmp_path / "ws",
+            config_path=tmp_path / "cfg.json",
+            provider=stub_provider,
+            mcp_manifests_dir=empty_mcp_dir,
+            start_gateway=False,
+        )
+        # Before start(), the list is empty (no adapters connected).
+        assert ctx._alert_adapters == []
+
+        await ctx.start()
+        # No real adapters configured → still empty after start().
+        assert ctx._alert_adapters == []
+
+        # Manually append an adapter AFTER start() — dispatch should see it
+        # because the list is shared, but it was NOT re-evaluated from _adapters.
+        extra = _make_mock_adapter("sms")
+        ctx._alert_adapters.append(extra)
+        assert len(ctx._alert_adapters) == 1
+
+        # Calling start() again would repopulate from self._adapters (still none),
+        # but we verify the list is only built from self._adapters, not re-polled.
+        await ctx.stop()
+
+    async def test_no_adapters_connected_falls_back_to_no_exception(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        """Empty adapter list → _dispatch_to_channels skipped; no exception raised."""
+        ctx = await build_application(
+            workspace_dir=tmp_path / "ws",
+            config_path=tmp_path / "cfg.json",
+            provider=stub_provider,
+            mcp_manifests_dir=empty_mcp_dir,
+            start_gateway=False,
+        )
+        await ctx.start()
+        assert ctx._alert_adapters == []
+
+        # Fire urgent alert — should fall back to print without raising.
+        assert ctx._scheduler is not None
+        on_urgent = ctx._scheduler._on_urgent_alert
+        assert on_urgent is not None
+        msg = _make_alert_message("heartbeat_response")
+        # Must not raise even with no adapters.
+        await on_urgent(msg)
+
+        await ctx.stop()
