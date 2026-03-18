@@ -1,5 +1,66 @@
 # OpenRattler — Build Progress
 
+## Build Piece 18.2 — Outbound Channel Tools ✅
+
+**Status:** Complete
+
+### Files Created
+
+- `openrattler/tools/builtin/channel_tools.py` — `OutboundChannelTools` class:
+  - `__init__(adapters, audit, config=None)` — builds per-channel `frozenset` allowed_recipients
+    seeded from adapter internals (`_from_number`, `_sender_allowlist`, `_default_to_number` for
+    SMS; `_channel_id` for Slack; `_sender_allowlist` + `_default_to_address` for email) plus any
+    user-configured extras from `OutboundChannelConfig`
+  - `register_all(registry)` — registers only tools for adapters present in `self._adapters`;
+    absent channels produce no tool entry
+  - `send_sms(recipient, message)` — E.164 validation, allowlist check, truncation, adapter dispatch
+  - `send_slack_message(channel_or_user, message)` — `^[#@][a-zA-Z0-9_-]{1,80}$` validation,
+    allowlist check, truncation, adapter dispatch
+  - `send_email(to_address, subject, body)` — RFC 5322 pattern validation, allowlist check,
+    body truncation, adapter dispatch
+  - All three: `requires_approval=True`, `trust_level_required=TrustLevel.main`
+  - Audit events: `outbound_message_sent`, `outbound_message_failed`, `outbound_message_truncated`;
+    recipient stored as SHA-256 hash (12-char prefix), never raw
+- `tests/test_tools/test_channel_tools.py` — `TestOutboundChannelTools` (22 tests)
+
+### Files Modified
+
+- `openrattler/config/loader.py`:
+  - Added `OutboundChannelConfig` model — `sms_enabled`, `slack_enabled`, `email_enabled` (all
+    `True`), `max_message_length=1600`, and per-channel `*_allowed_recipients: list[str] = []`
+  - Added `outbound_channels: OutboundChannelConfig` field to `AppConfig`
+
+- `openrattler/startup.py`:
+  - Added `OutboundChannelTools` import
+  - Added step 10c (placed after step 15 — channel adapters must be built first):
+    builds `{a.channel_name: a for a in adapters}` dict and calls
+    `OutboundChannelTools(...).register_all(registry)`; passes `config.outbound_channels`
+
+### Test Results
+
+```
+1511 passed, 1 skipped in 22.85s  (22 new + 1489 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (73 source files) ✅
+- `pytest tests/test_tools/test_channel_tools.py -v` — 22/22 passed ✅
+- `pytest` — 1511 collected (+1 skipped), 1511 passed ✅
+
+### Design Decisions
+
+- **Registration conditional on adapter presence**: `register_all()` checks the adapters dict keys;
+  no SMS adapter → no `send_sms` tool → no attack surface for that channel.
+- **Allowed_recipients seeded from adapter config**: outbound allowlist mirrors inbound security
+  posture automatically. `frozenset` built once at init, never mutated.
+- **Step 10c placed after step 15**: OutboundChannelTools depends on the built channel adapters list,
+  so it runs post-step-15. The registry is mutable and already held by the runtime; late
+  registrations are visible at session init time.
+- **Truncation with `[truncated]` suffix**: capped to `max_message_length` (default 1600) with a
+  suffix so the agent and user can see content was cut. Audit-logged as `outbound_message_truncated`.
+
+---
+
 ## Build Piece 18.1 — Alert Dispatch to Channels ✅
 
 **Status:** Complete

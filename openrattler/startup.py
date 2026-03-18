@@ -76,6 +76,7 @@ from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.social import SocialStore
 from openrattler.storage.transcripts import TranscriptStore
+from openrattler.tools.builtin.channel_tools import OutboundChannelTools
 from openrattler.tools.executor import ToolExecutor
 from openrattler.tools.registry import ToolRegistry, configure_default_registry
 from openrattler.tools.social_tools import SocialTools
@@ -803,6 +804,15 @@ async def build_application(
 
     # 15. Channel adapters.
     adapters = _build_channel_adapters(config, audit)
+
+    # 10c. OutboundChannelTools — registered after channel adapters are built so
+    #      register_all() can check which adapters are actually present.
+    #      Tools are added to the existing registry that the runtime already holds.
+    OutboundChannelTools(
+        adapters={a.channel_name: a for a in adapters},
+        audit=audit,
+        config=config.outbound_channels,
+    ).register_all(registry)
 
     return ApplicationContext(
         config=config,

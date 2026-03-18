@@ -362,6 +362,69 @@ class HeartbeatConfig(BaseModel):
     )
 
 
+class OutboundChannelConfig(BaseModel):
+    """Configuration for agent-initiated outbound messaging tools.
+
+    Controls which channel tools are registered and what recipients the agent
+    is allowed to contact proactively.  The ``*_allowed_recipients`` lists are
+    seeded at startup from each adapter's inbound configuration so the security
+    posture is consistent between inbound and outbound by default.
+
+    Security notes:
+    - ``*_allowed_recipients`` lists are the primary guard against prompt-injection
+      attacks that try to exfiltrate data to a third party's number/address.
+      Keep these lists narrow — only the user's own contacts.
+    - ``max_message_length`` defaults to 1600 (Twilio SMS hard limit); applied to
+      all channels so that all tool sends stay under SMS constraints.
+    """
+
+    sms_enabled: bool = Field(
+        default=True,
+        description="Whether the send_sms tool is active when an SMS adapter is configured.",
+    )
+    slack_enabled: bool = Field(
+        default=True,
+        description="Whether the send_slack_message tool is active when a Slack adapter is configured.",
+    )
+    email_enabled: bool = Field(
+        default=True,
+        description="Whether the send_email tool is active when an email adapter is configured.",
+    )
+    max_message_length: int = Field(
+        default=1600,
+        ge=1,
+        description=(
+            "Maximum character length for any outbound message body.  "
+            "Content beyond this limit is truncated with a [truncated] suffix.  "
+            "Default 1600 — the Twilio SMS hard limit."
+        ),
+    )
+    sms_allowed_recipients: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Phone numbers (E.164) the agent is permitted to SMS proactively.  "
+            "Seeded at startup from the SMS adapter's from_number and sender_allowlist.  "
+            "Extend this list to allow additional numbers."
+        ),
+    )
+    slack_allowed_recipients: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Slack channels (#channel) or users (@user) the agent may message proactively.  "
+            "Seeded from the Slack adapter's channel_id.  "
+            "Extend this list to allow additional targets."
+        ),
+    )
+    email_allowed_recipients: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Email addresses the agent is permitted to send to proactively.  "
+            "Seeded from the email adapter's sender_allowlist and default_to_address.  "
+            "Extend this list to allow additional addresses."
+        ),
+    )
+
+
 class ToolsConfig(BaseModel):
     """Trust-level tool allowlist defaults.
 
@@ -461,6 +524,13 @@ class AppConfig(BaseModel):
         description=(
             "Scheduled heartbeat check-in configuration. "
             "Controls whether and how often the agent runs background self-checks."
+        ),
+    )
+    outbound_channels: OutboundChannelConfig = Field(
+        default_factory=OutboundChannelConfig,
+        description=(
+            "Outbound channel tool configuration.  Controls which agent-initiated "
+            "messaging tools are active and which recipients are permitted."
         ),
     )
 
