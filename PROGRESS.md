@@ -1,5 +1,63 @@
 # OpenRattler — Build Progress
 
+## Build Piece 18.1 — Alert Dispatch to Channels ✅
+
+**Status:** Complete
+
+### Files Modified
+
+- `openrattler/models/messages.py`:
+  - Extended `MessageType` to include `"alert"` alongside existing types
+
+- `openrattler/startup.py`:
+  - Added `re` import; added `Awaitable`, `Callable` from typing; added `create_message` import
+  - Added `_TOOL_NAME_UNSAFE_RE` and `_TOOL_NAME_MAX_LEN` constants for tool name sanitisation
+  - **`_build_alert_adapters_list(adapters: dict[str, ChannelAdapter]) -> list[ChannelAdapter]`** —
+    filters to connected adapters with callable `send()`; logs DEBUG for each skipped adapter
+  - **`_dispatch_to_channels(message, adapters, audit) -> bool`** — async; uses
+    `asyncio.gather(return_exceptions=True)` for concurrent delivery; audit-logs
+    `alert_dispatch_failed` per-adapter failure and `alert_dispatch_total_failure` when all fail;
+    returns `True` if at least one succeeded, `False` if all failed or list is empty
+  - **`_on_security_alert`** — sanitises tool_name (strip unsafe chars, max 64), constructs
+    `UniversalMessage(type="alert", operation="security_alert", trust_level="security")`,
+    dispatches via `_dispatch_to_channels`; falls back to stderr print on total failure
+  - **`_on_urgent_alert`** — dispatches the existing `UniversalMessage` via `_dispatch_to_channels`;
+    falls back to original `[HEARTBEAT]`/`[ALERT]` stdout print on total failure
+  - `ApplicationContext.__init__` — new `alert_adapters_ref` and `on_security_alert` params;
+    stores `_alert_adapters` (shared mutable list) and `_security_alert_cb`
+  - `ApplicationContext.start()` — calls `_build_alert_adapters_list` once at startup,
+    populates `self._alert_adapters` in-place so closures see the current set
+  - `build_application()` — creates `_shared_alert_adapters` list before callbacks; passes
+    `alert_adapters_ref=_shared_alert_adapters` and `on_security_alert=_on_security_alert` to
+    `ApplicationContext`
+
+- `tests/test_startup/test_startup.py`:
+  - Added `TestAlertDispatch` (12 tests) covering dispatch helpers and integration scenarios
+
+### Test Results
+
+```
+1489 passed, 1 skipped in 22.85s  (12 new + 1477 prior)
+```
+
+- `black --check .` — all files pass ✅
+- `mypy openrattler/` — no issues (72 source files) ✅
+- `pytest` — 1489 collected (+1 skipped), 1489 passed ✅
+
+### Design Decisions
+
+- **Shared mutable list pattern**: `_shared_alert_adapters` is a single list object shared between
+  the closures and `ApplicationContext._alert_adapters`. `start()` modifies it in-place, so
+  callbacks always see the post-start contents without re-evaluation on every alert.
+- **`MessageType` extended**: added `"alert"` to `Literal` in `messages.py` since the spec requires
+  `type="alert"` for security alert messages; no existing messages use this value.
+- **Fallback preserved**: print-to-stdout/stderr is always reached when no adapters are connected
+  or all dispatches fail — the system degrades gracefully back to the previous behaviour.
+- **`_security_alert_cb` on `ApplicationContext`**: stored as `ctx._security_alert_cb` so tests
+  can invoke the closure directly without traversing NarrativeMemoryTools internals.
+
+---
+
 ## Build Pieces 35.2 + 36.2 — Heartbeat Processor & Live Alert Surfacing ✅
 
 **Status:** Complete

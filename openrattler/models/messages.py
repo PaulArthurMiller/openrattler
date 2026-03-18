@@ -19,7 +19,7 @@ from openrattler.models.errors import ErrorCode
 # Type aliases
 # ---------------------------------------------------------------------------
 
-MessageType = Literal["request", "response", "event", "error"]
+MessageType = Literal["request", "response", "event", "error", "alert"]
 TrustLevelType = Literal["public", "main", "local", "security", "mcp"]
 
 

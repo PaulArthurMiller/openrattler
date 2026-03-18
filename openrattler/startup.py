@@ -39,11 +39,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from openrattler.agents.providers.anthropic_provider import AnthropicProvider
 from openrattler.agents.providers.base import LLMProvider
@@ -66,7 +67,7 @@ from openrattler.mcp.bridge import MCPToolBridge
 from openrattler.mcp.manager import MCPManager
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.audit import AuditEvent
-from openrattler.models.messages import UniversalMessage
+from openrattler.models.messages import UniversalMessage, create_message
 from openrattler.models.sessions import Session
 from openrattler.processors.heartbeat import HEARTBEAT_SESSION_KEY, HeartbeatProcessor
 from openrattler.processors.social_secretary import SocialSecretaryProcessor
@@ -107,10 +108,103 @@ _DEFAULT_AGENT_CONFIG = AgentConfig(
 #: Development fallback WS secret — triggers a warning if used.
 _DEV_WS_SECRET = "dev-secret-changeme"
 
+#: Regex that matches any character NOT allowed in a sanitized tool name.
+_TOOL_NAME_UNSAFE_RE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.]")
+
+#: Maximum length for a sanitized tool name included in alert messages.
+_TOOL_NAME_MAX_LEN: int = 64
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+
+def _build_alert_adapters_list(adapters: dict[str, ChannelAdapter]) -> list[ChannelAdapter]:
+    """Return adapters that are connected and have ``send()`` available.
+
+    Iterates *adapters* and includes each adapter whose ``_connected``
+    attribute is ``True`` and whose ``send`` attribute is callable.
+    Skipped adapters are logged at DEBUG level.
+
+    Args:
+        adapters: Mapping of adapter name → ``ChannelAdapter`` instance.
+
+    Returns:
+        Filtered list of eligible adapters for alert dispatch.
+    """
+    result: list[ChannelAdapter] = []
+    for name, adapter in adapters.items():
+        connected: bool = getattr(adapter, "_connected", False)
+        has_send: bool = callable(getattr(adapter, "send", None))
+        if connected and has_send:
+            result.append(adapter)
+        else:
+            logger.debug(
+                "_build_alert_adapters_list: skipping adapter %r (connected=%s, has_send=%s)",
+                name,
+                connected,
+                has_send,
+            )
+    return result
+
+
+async def _dispatch_to_channels(
+    message: UniversalMessage,
+    adapters: list[ChannelAdapter],
+    audit: AuditLog,
+) -> bool:
+    """Dispatch *message* to all *adapters* concurrently.
+
+    Uses ``asyncio.gather`` with ``return_exceptions=True`` so a failure
+    in one adapter never blocks the others.  Each per-adapter failure is
+    audit-logged as ``alert_dispatch_failed``.  When every adapter fails,
+    an additional ``alert_dispatch_total_failure`` event is written and
+    ``False`` is returned so the caller can activate its print fallback.
+
+    Args:
+        message:  The alert message to deliver.
+        adapters: Pre-filtered list of connected adapters.
+        audit:    Shared audit log for failure recording.
+
+    Returns:
+        ``True`` if at least one adapter succeeded, ``False`` if all failed
+        or *adapters* is empty.
+    """
+    if not adapters:
+        return False
+
+    results = await asyncio.gather(
+        *[adapter.send(message) for adapter in adapters],
+        return_exceptions=True,
+    )
+
+    failure_count = 0
+    for adapter, result in zip(adapters, results):
+        if isinstance(result, BaseException):
+            failure_count += 1
+            await audit.log(
+                AuditEvent(
+                    event="alert_dispatch_failed",
+                    agent_id="startup",
+                    details={
+                        "adapter_name": adapter.channel_name,
+                        "error": str(result),
+                    },
+                )
+            )
+
+    if failure_count == len(adapters):
+        await audit.log(
+            AuditEvent(
+                event="alert_dispatch_total_failure",
+                agent_id="startup",
+                details={"adapter_count": len(adapters)},
+            )
+        )
+        return False
+
+    return True
 
 
 def build_provider_from_env() -> LLMProvider:
@@ -230,14 +324,21 @@ class ApplicationContext:
     ``run_until_interrupted()`` for the standard production lifecycle.
 
     Args:
-        config:           Validated application configuration.
-        audit:            Shared audit log.
-        runtime:          Wired agent runtime.
-        mcp_manager:      MCP connection registry.
-        adapters:         List of active channel adapters.
-        scheduler:        Optional processor scheduler (Social Secretary).
-        gateway:          Optional WebSocket gateway.
-        social_processor: Optional Social Secretary processor.
+        config:               Validated application configuration.
+        audit:                Shared audit log.
+        runtime:              Wired agent runtime.
+        mcp_manager:          MCP connection registry.
+        adapters:             List of active channel adapters.
+        scheduler:            Optional processor scheduler (Social Secretary).
+        gateway:              Optional WebSocket gateway.
+        social_processor:     Optional Social Secretary processor.
+        alert_adapters_ref:   Shared mutable list populated by ``start()`` with
+                              connected adapters eligible for alert dispatch.
+                              The same list object is closed over by the alert
+                              callbacks so they always see the current contents.
+        on_security_alert:    The ``_on_security_alert`` closure from
+                              ``build_application``, stored here so tests can
+                              invoke it directly via ``ctx._security_alert_cb``.
     """
 
     def __init__(
@@ -250,6 +351,8 @@ class ApplicationContext:
         scheduler: Optional[ProcessorScheduler] = None,
         gateway: Optional[Gateway] = None,
         social_processor: Optional[SocialSecretaryProcessor] = None,
+        alert_adapters_ref: Optional[list[ChannelAdapter]] = None,
+        on_security_alert: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
         self._config = config
         self._audit = audit
@@ -259,6 +362,14 @@ class ApplicationContext:
         self._scheduler = scheduler
         self._gateway = gateway
         self._social_processor = social_processor
+
+        # Shared mutable list for alert dispatch — populated in start().
+        # The same object is closed over by the urgent/security alert callbacks.
+        self._alert_adapters: list[ChannelAdapter] = (
+            alert_adapters_ref if alert_adapters_ref is not None else []
+        )
+        # Security alert callback exposed for test access.
+        self._security_alert_cb: Optional[Callable[[str, str], Awaitable[None]]] = on_security_alert
 
         # Session cache — keyed by session_key string.
         self._sessions: dict[str, Session] = {}
@@ -277,7 +388,8 @@ class ApplicationContext:
         2. ProcessorScheduler start.
         3. Gateway — wire runtime then start TCP listener.
         4. Channel adapter asyncio tasks.
-        5. Audit ``application_started``.
+        5. Build alert adapters list (captured once; callbacks close over it).
+        6. Audit ``application_started``.
         """
         if self._social_processor is not None:
             await self._social_processor.connect()
@@ -293,6 +405,14 @@ class ApplicationContext:
         for adapter in self._adapters:
             task = asyncio.create_task(self._channel_loop(adapter))
             self._channel_tasks.append(task)
+
+        # Populate the shared alert adapters list once at startup.
+        # The callbacks close over the same list object, so they always see
+        # the contents set here without re-evaluating on every alert.
+        alert_dict = {a.channel_name: a for a in self._adapters}
+        built = _build_alert_adapters_list(alert_dict)
+        self._alert_adapters.clear()
+        self._alert_adapters.extend(built)
 
         await self._audit.log(
             AuditEvent(
@@ -536,18 +656,41 @@ async def build_application(
     SocialTools(social_store, audit).register_all(registry)
 
     # 10b. NarrativeMemoryTools — with MemoryStore and out-of-band security alert.
-    async def _on_security_alert(filename: str, reason: str) -> None:
-        # Print directly to stderr so the alert is visible in the terminal
-        # independently of the agent's conversation output (36.2).
-        print(
-            f"\n[SECURITY ALERT] Write to {filename} was blocked by the memory "
-            f"security agent.\nReason: {reason}\n",
-            file=sys.stderr,
-            flush=True,
+    # Shared mutable list — populated by ApplicationContext.start().
+    # The closures below close over this object; start() modifies it in-place so
+    # the callbacks always see the current connected adapter set without
+    # re-evaluating on every alert.
+    _shared_alert_adapters: list[ChannelAdapter] = []
+
+    async def _on_security_alert(tool_name: str, reason: str) -> None:
+        # Sanitize tool_name before including in the alert message to prevent
+        # a crafted tool name from injecting content.
+        safe_name = _TOOL_NAME_UNSAFE_RE.sub("", tool_name)[:_TOOL_NAME_MAX_LEN]
+        alert_msg = create_message(
+            from_agent="startup",
+            to_agent="broadcast",
+            session_key="system",
+            type="alert",
+            operation="security_alert",
+            trust_level="security",
+            params={"tool_name": safe_name, "reason": reason, "severity": "high"},
         )
+        dispatched = (
+            await _dispatch_to_channels(alert_msg, _shared_alert_adapters, audit)
+            if _shared_alert_adapters
+            else False
+        )
+        if not dispatched:
+            # Fallback: print to stderr so the alert is never silently lost.
+            print(
+                f"\n[SECURITY ALERT] Write to {tool_name} was blocked by the memory "
+                f"security agent.\nReason: {reason}\n",
+                file=sys.stderr,
+                flush=True,
+            )
         logger.warning(
-            "SECURITY ALERT: write to %s was blocked by the memory security agent. " "Reason: %s",
-            filename,
+            "SECURITY ALERT: write to %s was blocked by the memory security agent. Reason: %s",
+            tool_name,
             reason,
         )
 
@@ -599,18 +742,25 @@ async def build_application(
     if heartbeat_cfg.enabled or ss_config.enabled:
 
         async def _on_urgent_alert(msg: UniversalMessage) -> None:
-            operation = msg.operation
-            params = msg.params
-            if operation == "heartbeat_response":
-                content = params.get("content", params.get("summary", ""))
-                if content:
-                    print(f"\n[HEARTBEAT] {content}\n", flush=True)
-            else:
-                summary = params.get("summary", "")
-                person = params.get("person", "")
-                label = f"{person}: " if person else ""
-                print(f"\n[ALERT] {label}{summary}\n", flush=True)
-            logger.info("Urgent alert dispatched: operation=%s", operation)
+            dispatched = (
+                await _dispatch_to_channels(msg, _shared_alert_adapters, audit)
+                if _shared_alert_adapters
+                else False
+            )
+            if not dispatched:
+                # Fallback: original stdout print so the alert is never silently lost.
+                operation = msg.operation
+                params = msg.params
+                if operation == "heartbeat_response":
+                    content = params.get("content", params.get("summary", ""))
+                    if content:
+                        print(f"\n[HEARTBEAT] {content}\n", flush=True)
+                else:
+                    summary = params.get("summary", "")
+                    person = params.get("person", "")
+                    label = f"{person}: " if person else ""
+                    print(f"\n[ALERT] {label}{summary}\n", flush=True)
+            logger.info("Urgent alert dispatched: operation=%s", msg.operation)
 
         scheduler = ProcessorScheduler(audit=audit, on_urgent_alert=_on_urgent_alert)
 
@@ -663,4 +813,6 @@ async def build_application(
         scheduler=scheduler,
         gateway=gateway,
         social_processor=social_processor,
+        alert_adapters_ref=_shared_alert_adapters,
+        on_security_alert=_on_security_alert,
     )
