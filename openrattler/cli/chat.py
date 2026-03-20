@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -303,6 +304,11 @@ class CLIChat:
         from stdin (via CLIAdapter) until the user types ``/quit`` or presses
         Ctrl+C / Ctrl+D.
         """
+        # Ensure stdout uses UTF-8 on Windows (default is cp1252 which cannot
+        # encode many Unicode characters including emoji).
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
         await self.open()
         assert self._runtime is not None
         assert self._session is not None

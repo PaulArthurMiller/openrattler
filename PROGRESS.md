@@ -1,5 +1,31 @@
 # OpenRattler — Build Progress
 
+## Live-Test Fixes (2026-03-20) ✅
+
+**Status:** Complete — applied during first end-to-end Slack live test
+
+### Files Modified
+
+- `openrattler/cli/chat.py`:
+  - Added `import sys`
+  - At `CLIChat.start()` entry, call `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`
+    if `stdout` supports it — fixes `UnicodeEncodeError` on Windows where the default console
+    encoding is cp1252, which cannot represent many Unicode characters including emoji
+
+- `openrattler/channels/slack_adapter.py`:
+  - `SlackAdapter.send()` previously rejected any message whose `operation` was not
+    `"send_slack_message"`, which silently dropped runtime response messages relayed by the channel
+    loop (these arrive with `type="response"` and `operation="user_message"`)
+  - Fixed the guard to also accept `message.type == "response"`, and added a fallback to read the
+    message text from `params["content"]` when `params.get("text")` is absent
+
+### Root Cause
+
+Both bugs surfaced only under a real Windows terminal + Slack integration and were invisible in the
+test suite (tests mock stdout and use in-process message dispatch).
+
+---
+
 ## Build Piece 18.2 — Outbound Channel Tools ✅
 
 **Status:** Complete
