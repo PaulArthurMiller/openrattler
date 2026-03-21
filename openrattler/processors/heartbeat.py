@@ -173,10 +173,12 @@ class HeartbeatProcessor(ProactiveProcessor):
                 from_agent="scheduler:heartbeat",
                 to_agent=self._session_key,
                 session_key=self._session_key,
-                type="event",
+                type="request",
                 operation="heartbeat_trigger",
                 trust_level="main",
-                params={},
+                params={
+                    "content": "Scheduled heartbeat check-in. Please run your heartbeat tasks now."
+                },
             )
 
             response = await self._runtime.process_message(session, trigger)

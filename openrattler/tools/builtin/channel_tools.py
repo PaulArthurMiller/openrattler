@@ -453,6 +453,10 @@ class OutboundChannelTools:
         if adapter is None:
             return {"success": False, "error": "Slack adapter not available"}
 
+        # Strip the #/@ decorator before passing to the adapter — the tool
+        # validation format uses "#channel" / "@user" but Slack's API expects
+        # bare channel IDs ("C0ABC123") or channel/user names without the prefix.
+        slack_channel = channel_or_user.lstrip("#@")
         send_msg = create_message(
             from_agent="channel_tools",
             to_agent="slack",
@@ -460,7 +464,7 @@ class OutboundChannelTools:
             type="request",
             operation="send_slack_message",
             trust_level="main",
-            params={"channel": channel_or_user, "text": body},
+            params={"channel": slack_channel, "text": body},
         )
 
         recipient_hash = _hash_recipient(channel_or_user)

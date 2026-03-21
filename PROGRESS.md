@@ -1,5 +1,25 @@
 # OpenRattler — Build Progress
 
+## Heartbeat Live-Test Fixes (2026-03-21) ✅
+
+**Status:** Complete — applied during first end-to-end heartbeat cycle test
+
+### Bugs Found and Fixed
+
+1. **`processors/heartbeat.py`** — trigger message used `type="event"`, which `AgentRuntime._build_messages()` silently skips (only `type="request"` becomes a user-role LLM message). Result: Anthropic API received a prompt with no user turn → 400 Bad Request. Fixed by changing to `type="request"` with `params={"content": "Scheduled heartbeat check-in. Please run your heartbeat tasks now."}`.
+
+2. **`config/loader.py` (via `~/.openrattler/config.json`)** — `send_slack_message`, `send_sms`, `send_email` were absent from the `main` trust defaults in `allowed_tools`. The `check_permission` rule 2 ("must appear in allowed_tools; empty list = deny all") blocked the agent from seeing or calling the outbound channel tools. Fixed by adding the three tool names to the `main` list in `config.json`.
+
+3. **`tools/builtin/channel_tools.py`** — `send_slack_message` passed `channel_or_user` (e.g. `#C0AMN504BNE`) verbatim to the adapter. Slack API expects bare IDs/names without the `#`/`@` decorator prefix. Fixed by calling `channel_or_user.lstrip("#@")` before building `params["channel"]`.
+
+4. **`~/.openrattler/identity/HEARTBEAT.md`** — agent didn't know which Slack identifier to use (guessed `@paul`, which wasn't in the allowlist) and was respecting the `requires_approval: Yes ⚠️` tool flag autonomously. Fixed by specifying `#C0AMN504BNE` and noting that approval is pre-authorized during heartbeat turns.
+
+### Outcome
+
+First full heartbeat cycle completed successfully: agent called `send_slack_message`, message delivered to Slack channel, `[HEARTBEAT] ✅ Heartbeat sent successfully.` logged, `heartbeat_response` urgent alert dispatched.
+
+---
+
 ## Live-Test Fixes (2026-03-20) ✅
 
 **Status:** Complete — applied during first end-to-end Slack live test
