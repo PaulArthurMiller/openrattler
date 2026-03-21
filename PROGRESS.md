@@ -1,5 +1,51 @@
 # OpenRattler — Build Progress
 
+## Heartbeat Live-Test Fixes (2026-03-21) ✅
+
+**Status:** Complete — applied during first end-to-end heartbeat cycle test
+
+### Bugs Found and Fixed
+
+1. **`processors/heartbeat.py`** — trigger message used `type="event"`, which `AgentRuntime._build_messages()` silently skips (only `type="request"` becomes a user-role LLM message). Result: Anthropic API received a prompt with no user turn → 400 Bad Request. Fixed by changing to `type="request"` with `params={"content": "Scheduled heartbeat check-in. Please run your heartbeat tasks now."}`.
+
+2. **`config/loader.py` (via `~/.openrattler/config.json`)** — `send_slack_message`, `send_sms`, `send_email` were absent from the `main` trust defaults in `allowed_tools`. The `check_permission` rule 2 ("must appear in allowed_tools; empty list = deny all") blocked the agent from seeing or calling the outbound channel tools. Fixed by adding the three tool names to the `main` list in `config.json`.
+
+3. **`tools/builtin/channel_tools.py`** — `send_slack_message` passed `channel_or_user` (e.g. `#C0AMN504BNE`) verbatim to the adapter. Slack API expects bare IDs/names without the `#`/`@` decorator prefix. Fixed by calling `channel_or_user.lstrip("#@")` before building `params["channel"]`.
+
+4. **`~/.openrattler/identity/HEARTBEAT.md`** — agent didn't know which Slack identifier to use (guessed `@paul`, which wasn't in the allowlist) and was respecting the `requires_approval: Yes ⚠️` tool flag autonomously. Fixed by specifying `#C0AMN504BNE` and noting that approval is pre-authorized during heartbeat turns.
+
+### Outcome
+
+First full heartbeat cycle completed successfully: agent called `send_slack_message`, message delivered to Slack channel, `[HEARTBEAT] ✅ Heartbeat sent successfully.` logged, `heartbeat_response` urgent alert dispatched.
+
+---
+
+## Live-Test Fixes (2026-03-20) ✅
+
+**Status:** Complete — applied during first end-to-end Slack live test
+
+### Files Modified
+
+- `openrattler/cli/chat.py`:
+  - Added `import sys`
+  - At `CLIChat.start()` entry, call `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`
+    if `stdout` supports it — fixes `UnicodeEncodeError` on Windows where the default console
+    encoding is cp1252, which cannot represent many Unicode characters including emoji
+
+- `openrattler/channels/slack_adapter.py`:
+  - `SlackAdapter.send()` previously rejected any message whose `operation` was not
+    `"send_slack_message"`, which silently dropped runtime response messages relayed by the channel
+    loop (these arrive with `type="response"` and `operation="user_message"`)
+  - Fixed the guard to also accept `message.type == "response"`, and added a fallback to read the
+    message text from `params["content"]` when `params.get("text")` is absent
+
+### Root Cause
+
+Both bugs surfaced only under a real Windows terminal + Slack integration and were invisible in the
+test suite (tests mock stdout and use in-process message dispatch).
+
+---
+
 ## Build Piece 18.2 — Outbound Channel Tools ✅
 
 **Status:** Complete
