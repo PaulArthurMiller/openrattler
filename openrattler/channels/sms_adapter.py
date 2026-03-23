@@ -242,14 +242,20 @@ class SMSAdapter(ChannelAdapter):
         - ``auth_token`` is never included in any audit event or log message.
         - Body is logged only as its character length.
         """
-        if message.operation != "send_sms":
+        # Accept tool-initiated sends (operation="send_sms") and alert/event
+        # dispatches (type="event"/"alert"/"response") such as heartbeat_response
+        # and security_alert forwarded by the scheduler's urgent-alert callback.
+        if message.operation != "send_sms" and message.type not in ("event", "alert", "response"):
             raise ValueError(
                 f"SMSAdapter.send: unsupported operation '{message.operation}'; "
-                "expected 'send_sms'"
+                "expected 'send_sms' or an alert/event dispatch"
             )
 
         to = str(message.params.get("to", self._default_to_number))
-        body = str(message.params.get("body", ""))
+        # Tool sends use params["body"]; alert dispatches use params["content"] or ["summary"].
+        body = str(
+            message.params.get("body") or message.params.get("content") or message.params.get("summary", "")
+        )
 
         url = f"{_API_BASE}/{self._account_sid}/Messages.json"
         form = {"From": self._from_number, "To": to, "Body": body}

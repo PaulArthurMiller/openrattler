@@ -20,6 +20,28 @@ stopping points — this is now noted in MEMORY.md.
 ---
 
 
+## Email Live-Test Fixes (2026-03-23) ✅
+
+**Status:** Complete — applied during first end-to-end email live test
+
+### Config Added
+
+- `~/.openrattler/config.json` — added `channels.email` block with Gmail IMAP/SMTP settings:
+  - `imap_host=imap.gmail.com` (port 993, SSL), `smtp_host=smtp.gmail.com` (port 587, STARTTLS)
+  - `username=corvus.openrattler@gmail.com`, app password, `sender_allowlist`/`default_to_address` set to Paul's Gmail
+
+### Bugs Found and Fixed
+
+1. **`channels/email_adapter.py` — `receive()` crashed channel loop on rejected senders**: `_build_universal_message()` raises `PermissionError` for senders not in the allowlist (e.g. Google account notification emails). This propagated out of `receive()` into `_channel_loop()` in `startup.py`, which treats any unhandled exception as a fatal crash and stops the loop permanently. Fixed by wrapping `_build_universal_message()` in a `try/except PermissionError` inside `receive()` — rejected messages are silently skipped and polling continues.
+
+2. **`channels/email_adapter.py` — `send()` rejected runtime response messages**: Same issue as the Slack adapter fix (2026-03-20). `send()` only accepted `operation="send_email"`, but the channel loop in `startup.py` feeds it the raw runtime response which has `operation="user_message"` and `type="response"`. Fixed by accepting `type="response"` as a valid message type and reading the body from `params["content"]` as a fallback when `params["body"]` is absent. Same pattern as `slack_adapter.py`.
+
+### Outcome
+
+Full round-trip confirmed: inbound email from `paularthurmiller@gmail.com` received via IMAP, processed by Corvus, reply sent via SMTP back to Paul's Gmail.
+
+---
+
 ## Heartbeat Live-Test Fixes (2026-03-21) ✅
 
 **Status:** Complete — applied during first end-to-end heartbeat cycle test

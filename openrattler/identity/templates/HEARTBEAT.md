@@ -6,7 +6,7 @@ You are running a scheduled background check-in, not responding to a direct user
 
 1. Review any pending social alerts and assess whether any are urgent enough to proactively notify the user.
 2. Check working memory for anything time-sensitive that may need attention.
-3. If there is something the user genuinely needs to know, surface it through the appropriate channel.
+3. If there is something the user genuinely needs to know, send a brief SMS using the `send_sms` tool. Do not use Slack for heartbeat notifications.
 4. If nothing is urgent, do nothing — silence is correct when there is nothing to surface.
 
 **Guidelines:**

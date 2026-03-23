@@ -422,7 +422,11 @@ class EmailAdapter(ChannelAdapter):
                 msgs = []
 
             if msgs:
-                return await self._build_universal_message(msgs[0])
+                try:
+                    return await self._build_universal_message(msgs[0])
+                except PermissionError:
+                    # Rejected sender or rate limit — skip and continue polling.
+                    pass
 
             await asyncio.sleep(self._poll_interval)
 
@@ -447,15 +451,18 @@ class EmailAdapter(ChannelAdapter):
         - The subject is stored as a truncated hash in the audit log, not
           in plaintext.
         """
-        if message.operation != "send_email":
+        # Accept tool-initiated sends (operation="send_email") and
+        # runtime response messages (type="response") relayed by the channel loop.
+        if message.operation != "send_email" and message.type != "response":
             raise ValueError(
                 f"EmailAdapter.send: unsupported operation '{message.operation}'; "
-                "expected 'send_email'"
+                "expected 'send_email' or a runtime response message"
             )
 
         to = str(message.params.get("to", self._default_to_address))
-        subject = str(message.params.get("subject", ""))
-        body = str(message.params.get("body", ""))
+        subject = str(message.params.get("subject", "Re: OpenRattler"))
+        # Tool-initiated sends use params["body"]; runtime responses use params["content"].
+        body = str(message.params.get("body") or message.params.get("content", ""))
 
         await asyncio.to_thread(
             _smtp_send,
