@@ -165,6 +165,11 @@ class HeartbeatProcessor(ProactiveProcessor):
         try:
             heartbeat_section = await self._identity_loader.load_heartbeat_section()
             session = await self._runtime.initialize_session(self._session_key)
+            # Clear accumulated transcript history so each cycle runs with a
+            # fresh context.  Without this, the heartbeat session history grows
+            # unboundedly and Corvus eventually sees dozens of identical prior
+            # triggers, causing it to flag the pattern as a loop.
+            session.history = []
 
             if heartbeat_section:
                 session.system_prompt = session.system_prompt + "\n\n" + heartbeat_section

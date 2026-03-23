@@ -226,7 +226,11 @@ class SlackAdapter(ChannelAdapter):
                 msgs = []
 
             if msgs:
-                return await self._build_universal_message(msgs[0])
+                try:
+                    return await self._build_universal_message(msgs[0])
+                except PermissionError:
+                    # Rejected sender or rate limit — skip and continue polling.
+                    pass
             await asyncio.sleep(self._poll_interval)
 
         raise EOFError("SlackAdapter disconnected")
