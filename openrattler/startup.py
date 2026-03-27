@@ -76,6 +76,7 @@ from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.social import SocialStore
 from openrattler.storage.transcripts import TranscriptStore
+from openrattler.auth.google_oauth import GoogleCredentialManager
 from openrattler.tools.builtin.channel_tools import OutboundChannelTools
 from openrattler.tools.executor import ToolExecutor
 from openrattler.tools.registry import ToolRegistry, configure_default_registry
@@ -340,6 +341,9 @@ class ApplicationContext:
         on_security_alert:    The ``_on_security_alert`` closure from
                               ``build_application``, stored here so tests can
                               invoke it directly via ``ctx._security_alert_cb``.
+        google_credentials:   Optional ``GoogleCredentialManager`` instance.
+                              ``None`` if ``client_secrets.json`` is absent or
+                              Google tools are not configured.
     """
 
     def __init__(
@@ -354,6 +358,7 @@ class ApplicationContext:
         social_processor: Optional[SocialSecretaryProcessor] = None,
         alert_adapters_ref: Optional[list[ChannelAdapter]] = None,
         on_security_alert: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        google_credentials: Optional[GoogleCredentialManager] = None,
     ) -> None:
         self._config = config
         self._audit = audit
@@ -363,6 +368,8 @@ class ApplicationContext:
         self._scheduler = scheduler
         self._gateway = gateway
         self._social_processor = social_processor
+        #: Shared Google credential manager — None if client_secrets.json is absent.
+        self.google_credentials: Optional[GoogleCredentialManager] = google_credentials
 
         # Shared mutable list for alert dispatch — populated in start().
         # The same object is closed over by the urgent/security alert callbacks.
@@ -814,6 +821,26 @@ async def build_application(
         config=config.outbound_channels,
     ).register_all(registry)
 
+    # 10d. GoogleCredentialManager — instantiated only if client_secrets.json exists.
+    #      Non-fatal if absent: Google tools will be unavailable but everything else works.
+    google_credentials: Optional[GoogleCredentialManager] = None
+    google_auth_cfg = config.google_auth
+    creds_dir = workspace_dir / google_auth_cfg.credentials_path
+    client_secrets = creds_dir / google_auth_cfg.client_secrets_file
+    if client_secrets.exists():
+        google_credentials = GoogleCredentialManager(
+            credentials_path=creds_dir,
+            scopes=google_auth_cfg.scopes,
+            audit=audit,
+            token_file=google_auth_cfg.token_file,
+            callback_port=google_auth_cfg.oauth_callback_port,
+        )
+        logger.info("GoogleCredentialManager initialised (client_secrets.json found).")
+    else:
+        logger.info(
+            "client_secrets.json not found at %s; Google tools will be unavailable.", client_secrets
+        )
+
     return ApplicationContext(
         config=config,
         audit=audit,
@@ -825,4 +852,5 @@ async def build_application(
         social_processor=social_processor,
         alert_adapters_ref=_shared_alert_adapters,
         on_security_alert=_on_security_alert,
+        google_credentials=google_credentials,
     )

@@ -354,12 +354,30 @@ class TestReceiveSecurity:
     async def test_receive_rejects_unknown_sender(
         self, adapter_with_audit: EmailAdapter, audit: AuditLog
     ) -> None:
+        # receive() catches PermissionError internally (hotfix 633c8a4: stop crash on bad msg).
+        # The rejection is verified via the audit log; we disconnect after the first rejection
+        # to make receive() exit (raising EOFError) rather than loop forever on the mock.
         raw = _make_raw_email(from_addr=_UNKNOWN_SENDER)
-        # Patch the sync helper directly so asyncio.to_thread runs for real
-        # and the audit log's _sync_append is not intercepted.
-        with patch("openrattler.channels.email_adapter._fetch_unseen", return_value=[raw]):
+        call_count = 0
+
+        def _fetch_side_effect(*_args: object, **_kwargs: object) -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [raw]
+            # After the rejection is processed, disconnect so receive() exits.
+            adapter_with_audit._connected = False
+            return []
+
+        with (
+            patch(
+                "openrattler.channels.email_adapter._fetch_unseen",
+                side_effect=_fetch_side_effect,
+            ),
+            patch("asyncio.sleep"),
+        ):  # skip poll delay so the test is fast
             await adapter_with_audit.connect()
-            with pytest.raises(PermissionError):
+            with pytest.raises(EOFError):
                 await adapter_with_audit.receive()
 
         events = await audit.query(event_type="email_sender_rejected")
@@ -414,11 +432,28 @@ class TestReceiveSecurity:
             msg1 = await limited_adapter.receive()
             assert isinstance(msg1, UniversalMessage)
 
-        with patch(
-            "openrattler.channels.email_adapter.asyncio.to_thread", side_effect=fake_to_thread
+        # Second call: rate-limited. receive() catches PermissionError internally (hotfix
+        # 633c8a4), so we disconnect after the first rejection to make receive() exit.
+        rate_call = 0
+
+        async def fake_to_thread_then_disconnect(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal rate_call
+            if fn.__name__ == "_fetch_unseen":
+                rate_call += 1
+                if rate_call == 1:
+                    return [raw]
+                limited_adapter._connected = False
+                return []
+            return fn(*args, **kwargs)
+
+        with (
+            patch(
+                "openrattler.channels.email_adapter.asyncio.to_thread",
+                side_effect=fake_to_thread_then_disconnect,
+            ),
+            patch("asyncio.sleep"),
         ):
-            # Second message is rate-limited
-            with pytest.raises(PermissionError):
+            with pytest.raises(EOFError):
                 await limited_adapter.receive()
 
         events = await audit.query(event_type="email_rate_limited")

@@ -215,20 +215,36 @@ class TestReceiveSecurity:
     async def test_receive_rejects_unknown_sender(
         self, adapter_with_audit: SlackAdapter, audit: AuditLog
     ) -> None:
+        # receive() catches PermissionError internally (hotfix 633c8a4: stop crash on bad msg).
+        # The rejection is verified via the audit log; we disconnect after the first rejection
+        # to make receive() exit (raising EOFError) rather than loop forever on the mock.
         msg_dict = _make_slack_msg(user=_UNKNOWN_USER_ID)
-        with patch.object(
-            adapter_with_audit,
-            "_fetch_new_messages",
-            new=AsyncMock(return_value=[msg_dict]),
-        ):
+        call_count = 0
+
+        async def _fetch_side_effect() -> list[dict]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [msg_dict]
+            # After the first rejection is processed, disconnect so receive() exits.
+            await adapter_with_audit.disconnect()
+            return []
+
+        with (
+            patch.object(
+                adapter_with_audit,
+                "_fetch_new_messages",
+                new=_fetch_side_effect,
+            ),
+            patch("asyncio.sleep"),
+        ):  # skip poll delay so the test is fast
             await adapter_with_audit.connect()
-            with pytest.raises(PermissionError):
+            with pytest.raises(EOFError):
                 await adapter_with_audit.receive()
 
         events = await audit.query(event_type="slack_sender_rejected")
         assert len(events) == 1
         assert events[0].details["sender_id"] == _UNKNOWN_USER_ID
-        await adapter_with_audit.disconnect()
 
     async def test_receive_marks_ts_as_seen(self, adapter: SlackAdapter) -> None:
         msg_dict = _make_slack_msg()
@@ -332,17 +348,27 @@ class TestReceiveSecurity:
             msg1 = await limited_adapter.receive()
         assert isinstance(msg1, UniversalMessage)
 
-        with patch.object(
-            limited_adapter,
-            "_fetch_new_messages",
-            new=AsyncMock(return_value=[second_msg]),
+        # Second call: rate-limited. receive() catches PermissionError internally (hotfix
+        # 633c8a4), so we disconnect after the first rejection to make receive() exit.
+        rate_call = 0
+
+        async def _fetch_rate_then_disconnect() -> list:
+            nonlocal rate_call
+            rate_call += 1
+            if rate_call == 1:
+                return [second_msg]
+            await limited_adapter.disconnect()
+            return []
+
+        with (
+            patch.object(limited_adapter, "_fetch_new_messages", new=_fetch_rate_then_disconnect),
+            patch("asyncio.sleep"),
         ):
-            with pytest.raises(PermissionError):
+            with pytest.raises(EOFError):
                 await limited_adapter.receive()
 
         events = await audit.query(event_type="slack_rate_limited")
         assert len(events) >= 1
-        await limited_adapter.disconnect()
 
     async def test_fetch_error_handled(
         self, adapter_with_audit: SlackAdapter, audit: AuditLog
@@ -409,7 +435,9 @@ class TestBotMessageFiltering:
         await adapter.disconnect()
 
     async def test_allow_bot_messages_requires_allowlist(self, audit: AuditLog) -> None:
-        """allow_bot_messages=True, bot ID NOT in allowlist → PermissionError."""
+        """allow_bot_messages=True, bot ID NOT in allowlist → rejection audit-logged."""
+        # receive() catches PermissionError internally (hotfix 633c8a4), so we
+        # disconnect after the first rejection to make receive() exit with EOFError.
         config = _make_config(
             extra={
                 "allow_bot_messages": True,
@@ -418,15 +446,26 @@ class TestBotMessageFiltering:
         )
         adapter = SlackAdapter(config, agent_id="main", audit=audit)
         msg_dict = _make_slack_msg(bot_id=_UNKNOWN_BOT_ID)
+        bot_call = 0
 
-        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+        async def _fetch_bot_then_disconnect() -> list:
+            nonlocal bot_call
+            bot_call += 1
+            if bot_call == 1:
+                return [msg_dict]
+            await adapter.disconnect()
+            return []
+
+        with (
+            patch.object(adapter, "_fetch_new_messages", new=_fetch_bot_then_disconnect),
+            patch("asyncio.sleep"),
+        ):
             await adapter.connect()
-            with pytest.raises(PermissionError):
+            with pytest.raises(EOFError):
                 await adapter.receive()
 
         events = await audit.query(event_type="slack_sender_rejected")
         assert len(events) == 1
-        await adapter.disconnect()
 
     def test_allow_bot_messages_still_filters_channel_join(self) -> None:
         """allow_bot_messages=True, channel_join → still filtered."""

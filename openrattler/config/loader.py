@@ -362,6 +362,51 @@ class HeartbeatConfig(BaseModel):
     )
 
 
+class GoogleAuthConfig(BaseModel):
+    """Configuration for Google OAuth 2.0 credential management.
+
+    One set of credentials covers all three Google APIs (Gmail, Drive, Calendar).
+    The ``scopes`` list determines which APIs are accessible; the
+    ``client_secrets_file`` identifies the app to Google.
+
+    Security notes:
+    - ``client_secrets.json`` must not be committed to a public repository.
+    - ``google_tokens.enc`` is Fernet-encrypted at rest; the passphrase comes
+      from ``GOOGLE_OAUTH_PASSPHRASE`` (env var) at runtime.
+    - The ``credentials_path`` value is joined to the workspace root at startup.
+    """
+
+    credentials_path: str = Field(
+        default="auth",
+        description="Sub-directory within the workspace for OAuth credential files.",
+    )
+    token_file: str = Field(
+        default="google_tokens.enc",
+        description="Filename of the encrypted token within credentials_path.",
+    )
+    client_secrets_file: str = Field(
+        default="client_secrets.json",
+        description="Filename of the OAuth client secrets file within credentials_path.",
+    )
+    scopes: list[str] = Field(
+        default_factory=lambda: [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/calendar.events",
+        ],
+        description="OAuth 2.0 scopes requested during authorisation.",
+    )
+    oauth_callback_port: int = Field(
+        default=8765,
+        ge=1024,
+        le=65535,
+        description=(
+            "Localhost port for the temporary OAuth callback server during authorisation. "
+            "Must be registered as an authorised redirect URI in Google Cloud Console."
+        ),
+    )
+
+
 class OutboundChannelConfig(BaseModel):
     """Configuration for agent-initiated outbound messaging tools.
 
@@ -531,6 +576,13 @@ class AppConfig(BaseModel):
         description=(
             "Outbound channel tool configuration.  Controls which agent-initiated "
             "messaging tools are active and which recipients are permitted."
+        ),
+    )
+    google_auth: GoogleAuthConfig = Field(
+        default_factory=GoogleAuthConfig,
+        description=(
+            "Google OAuth 2.0 credential configuration.  Shared by Gmail, Drive, "
+            "and Calendar tool integrations."
         ),
     )
 
