@@ -304,3 +304,39 @@ class TestHeartbeatConfig:
         loaded = load_config(path)
         assert loaded.heartbeat.enabled is False
         assert loaded.heartbeat.interval_minutes == 15
+
+    # -- log_context_entries --
+
+    def test_log_context_entries_default_is_7(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.log_context_entries == 7
+
+    def test_log_context_entries_accepts_minimum_1(self) -> None:
+        cfg = HeartbeatConfig(log_context_entries=1)
+        assert cfg.log_context_entries == 1
+
+    def test_log_context_entries_accepts_maximum_50(self) -> None:
+        cfg = HeartbeatConfig(log_context_entries=50)
+        assert cfg.log_context_entries == 50
+
+    def test_log_context_entries_rejects_0(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(log_context_entries=0)
+
+    def test_log_context_entries_rejects_51(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(log_context_entries=51)
+
+    # -- log_max_retained --
+
+    def test_log_max_retained_default_is_100(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.log_max_retained == 100
+
+    def test_log_max_retained_accepts_minimum_10(self) -> None:
+        cfg = HeartbeatConfig(log_max_retained=10)
+        assert cfg.log_max_retained == 10
+
+    def test_log_max_retained_rejects_9(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(log_max_retained=9)

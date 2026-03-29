@@ -1,7 +1,8 @@
-"""Tests for HeartbeatProcessor and HeartbeatOutput (Build 35.2)."""
+"""Tests for HeartbeatProcessor and HeartbeatOutput (Build 35.2 / 20.1)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,7 @@ from openrattler.processors.heartbeat import (
     HeartbeatOutput,
     HeartbeatProcessor,
 )
+from openrattler.processors.heartbeat_log import HeartbeatLogEntry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -22,11 +24,11 @@ from openrattler.processors.heartbeat import (
 _SESSION_KEY = HEARTBEAT_SESSION_KEY
 
 
-def _stub_response(content: str) -> UniversalMessage:
+def _stub_response(content: str, session_key: str = _SESSION_KEY) -> UniversalMessage:
     return create_message(
         from_agent="agent:main:main",
         to_agent="scheduler:heartbeat",
-        session_key=_SESSION_KEY,
+        session_key=session_key,
         type="response",
         operation="chat_response",
         trust_level="main",
@@ -37,26 +39,42 @@ def _stub_response(content: str) -> UniversalMessage:
 def _make_processor(
     heartbeat_content: str = "## Heartbeat\nCheck your alerts.",
     response_content: str = "",
+    tmp_path: Path | None = None,
 ) -> HeartbeatProcessor:
-    """Build a HeartbeatProcessor with mocked runtime and identity loader."""
+    """Build a HeartbeatProcessor with mocked runtime, identity loader, and heartbeat log."""
     runtime = MagicMock()
-    runtime.initialize_session = AsyncMock(
-        return_value=MagicMock(
-            key=_SESSION_KEY,
-            system_prompt="## Soul\n\nBase prompt.",
-            history=[],
-        )
+    session_mock = MagicMock(
+        key=_SESSION_KEY,
+        system_prompt="## Soul\n\nBase prompt.",
+        history=[],
     )
-    runtime.process_message = AsyncMock(return_value=_stub_response(response_content))
+    runtime.initialize_session = AsyncMock(return_value=session_mock)
+    # process_message returns based on current response_content; allow it to vary in tests.
+    runtime.process_message = AsyncMock(
+        side_effect=lambda sess, msg: _stub_response(response_content, msg.session_key)
+    )
 
     identity_loader = MagicMock()
     identity_loader.load_heartbeat_section = AsyncMock(return_value=heartbeat_content)
 
-    return HeartbeatProcessor(
+    proc = HeartbeatProcessor(
         runtime=runtime,
         identity_loader=identity_loader,
+        identity_dir=tmp_path if tmp_path is not None else Path("/tmp/heartbeat_test"),
         session_key=_SESSION_KEY,
     )
+    # Replace heartbeat_log with an async mock so tests don't touch disk unless they
+    # explicitly need a real log (see TestEchoChamberRegression).
+    log_mock = MagicMock()
+    log_mock.read_recent = AsyncMock(return_value=[])
+    log_mock.append = AsyncMock()
+    log_mock.prune = AsyncMock()
+    log_mock.build_context_block = MagicMock(
+        return_value="## Recent Heartbeat History\n\n_No prior cycles recorded._\n"
+    )
+    proc._heartbeat_log = log_mock
+
+    return proc
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +160,16 @@ class TestHeartbeatProcessorCycle:
         session = proc._runtime.initialize_session.return_value
         assert "## Heartbeat" in session.system_prompt
 
-    async def test_empty_heartbeat_section_not_appended(self) -> None:
+    async def test_empty_heartbeat_section_still_injects_context_block(self) -> None:
+        # When heartbeat_section is empty, the context block is still injected.
         proc = _make_processor(heartbeat_content="", response_content="ok")
         original_prompt = proc._runtime.initialize_session.return_value.system_prompt
         await proc.run_cycle()
         session = proc._runtime.initialize_session.return_value
-        # system_prompt should not be appended to if heartbeat_section is empty
-        assert session.system_prompt == original_prompt
+        # The context block (heartbeat log history) is always appended even when HEARTBEAT.md
+        # section is empty, so system_prompt is modified.
+        assert session.system_prompt != original_prompt
+        assert "Heartbeat History" in session.system_prompt
 
     async def test_runtime_process_message_called(self) -> None:
         proc = _make_processor(response_content="something")
@@ -247,3 +268,52 @@ class TestHeartbeatDispatchIntegration:
         await scheduler._run_processor_cycle(proc)
 
         assert received == []
+
+
+# ---------------------------------------------------------------------------
+# TestEchoChamberRegression (Build Piece 20.1)
+# ---------------------------------------------------------------------------
+
+
+class TestEchoChamberRegression:
+    """Verifies per-cycle session isolation — the echo-chamber fix."""
+
+    async def test_two_cycles_produce_different_session_keys(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="something", tmp_path=tmp_path)
+        await proc.run_cycle()
+        key1 = proc._runtime.initialize_session.await_args_list[0][0][0]
+        await proc.run_cycle()
+        key2 = proc._runtime.initialize_session.await_args_list[1][0][0]
+        assert key1 != key2
+
+    async def test_session_key_follows_prefix_pattern(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="something", tmp_path=tmp_path)
+        await proc.run_cycle()
+        key = proc._runtime.initialize_session.await_args_list[0][0][0]
+        assert key.startswith("agent:main:heartbeat:hb_")
+
+    async def test_session_initialised_with_empty_history(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="something", tmp_path=tmp_path)
+        await proc.run_cycle()
+        session = proc._runtime.initialize_session.return_value
+        # run_cycle() must set session.history = [] for per-cycle isolation.
+        assert session.history == []
+
+    async def test_heartbeat_log_append_called_once_per_cycle(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="something", tmp_path=tmp_path)
+        await proc.run_cycle()
+        proc._heartbeat_log.append.assert_awaited_once()
+
+    async def test_quiet_cycle_produces_correct_log_entry(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="", tmp_path=tmp_path)
+        await proc.run_cycle()
+        call_args = proc._heartbeat_log.append.await_args
+        entry: HeartbeatLogEntry = call_args[0][0]
+        assert entry.urgency == "low"
+        assert entry.delivered_to_user is False
+        assert entry.summary == "No significant activity detected."
+
+    async def test_heartbeat_log_prune_called_after_append(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="something", tmp_path=tmp_path)
+        await proc.run_cycle()
+        proc._heartbeat_log.prune.assert_awaited_once()
