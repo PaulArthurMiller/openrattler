@@ -37,3 +37,8 @@ Thumbs.db
 .env
 *.env
 config.json
+
+# Google OAuth credentials — never commit
+auth/client_secrets.json
+auth/google_tokens.enc
+auth/oauth_salt.bin

@@ -20,6 +20,28 @@ stopping points — this is now noted in MEMORY.md.
 ---
 
 
+## Build 19.1 — Google OAuth Credential Manager (2026-03-27) ✅
+
+**Status:** Complete — PR #43 open for review
+**Branch:** `build/19.1-google-oauth`
+
+### What was built
+
+- `openrattler/auth/google_oauth.py` — `GoogleCredentialManager` with Fernet + PBKDF2HMAC (480k iterations) encrypted token storage. Full OAuth consent flow, silent refresh on expiry, `openrattler auth google` CLI subcommand.
+- `openrattler/auth/__init__.py` — new auth package
+- `openrattler/config/loader.py` — `GoogleAuthConfig` model added to `AppConfig`
+- `openrattler/startup.py` — conditionally wires `GoogleCredentialManager` into `ApplicationContext` when `client_secrets.json` exists
+- `openrattler/cli/main.py` — `openrattler auth google [--reauthorize]` subcommand
+- `tests/test_auth/test_google_oauth.py` — 18 new tests (encryption, passphrase resolution, auth state, credentials, audit logging)
+- `tests/test_channels/test_{slack,email}_adapter.py` — fixed 5 pre-existing hanging tests from hotfix 633c8a4 regression
+
+### Test results
+- 1529 passed, 1 skipped — full suite clean
+- mypy: no issues in 75 source files
+- black: clean
+
+---
+
 ## Email Live-Test Fixes (2026-03-23) ✅
 
 **Status:** Complete — applied during first end-to-end email live test

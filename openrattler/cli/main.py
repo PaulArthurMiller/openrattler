@@ -1,11 +1,13 @@
-"""CLI entry point — openrattler init / chat / run / sessions list.
+"""CLI entry point — openrattler init / chat / run / sessions list / auth.
 
 Usage (after ``pip install -e .``)::
 
-    openrattler init            # create workspace, default config
-    openrattler chat            # start interactive chat
-    openrattler run             # start full production server
-    openrattler sessions list   # list all session keys
+    openrattler init                # create workspace, default config
+    openrattler chat                # start interactive chat
+    openrattler run                 # start full production server
+    openrattler sessions list       # list all session keys
+    openrattler auth google         # run Google OAuth consent flow
+    openrattler auth google --reauthorize  # force re-authorisation
 
 Or directly::
 
@@ -19,6 +21,8 @@ SECURITY NOTES
   user can read or write the directory.
 - ``chat`` never prints the config file contents; API keys remain private.
 - ``run`` reads ``OPENRATTLER_WS_SECRET`` for the Gateway token secret.
+- ``auth google`` reads the passphrase from ``GOOGLE_OAUTH_PASSPHRASE`` (env
+  var) so automated restarts do not require interactive input.
 """
 
 from __future__ import annotations
@@ -161,6 +165,50 @@ def _cmd_sessions_list(args: argparse.Namespace) -> None:
         print("No sessions found.")
 
 
+async def _cmd_auth_google_async(args: argparse.Namespace) -> None:
+    """Run the Google OAuth consent flow (async implementation)."""
+    from openrattler.auth.google_oauth import AuthorizationError, GoogleCredentialManager
+
+    workspace = Path(args.workspace) if args.workspace else DEFAULT_WORKSPACE
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    config = __import__("openrattler.config.loader", fromlist=["load_config"]).load_config(
+        config_path
+    )
+
+    google_cfg = config.google_auth
+    creds_dir = workspace / google_cfg.credentials_path
+    client_secrets = creds_dir / google_cfg.client_secrets_file
+
+    if not client_secrets.exists():
+        print(
+            f"Error: client_secrets.json not found at {client_secrets}.\n"
+            "Download it from Google Cloud Console and place it there, then retry."
+        )
+        sys.exit(1)
+
+    manager = GoogleCredentialManager(
+        credentials_path=creds_dir,
+        scopes=google_cfg.scopes,
+        token_file=google_cfg.token_file,
+        callback_port=google_cfg.oauth_callback_port,
+    )
+
+    if manager.is_authorized() and not getattr(args, "reauthorize", False):
+        print(
+            "Already authorized. Use --reauthorize to force a new consent flow\n"
+            "and replace the existing token."
+        )
+        return
+
+    print("Opening browser for Google OAuth consent…")
+    await manager.authorize()
+    print("Authorization complete. Encrypted tokens saved.")
+
+
+def _cmd_auth_google(args: argparse.Namespace) -> None:
+    asyncio.run(_cmd_auth_google_async(args))
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -233,6 +281,30 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_sub.required = True
     sessions_sub.add_parser("list", help="list all session keys")
 
+    # auth
+    auth_parser = subparsers.add_parser(
+        "auth",
+        help="authentication management commands",
+    )
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", metavar="<provider>")
+    auth_sub.required = True
+    google_parser = auth_sub.add_parser(
+        "google",
+        help="authorize Google APIs (Gmail, Drive, Calendar) via OAuth 2.0",
+    )
+    google_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help=f"config file path (default: {DEFAULT_CONFIG_PATH})",
+    )
+    google_parser.add_argument(
+        "--reauthorize",
+        action="store_true",
+        default=False,
+        help="force a new consent flow even if already authorized",
+    )
+
     return parser
 
 
@@ -255,6 +327,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "sessions":
         if args.sessions_command == "list":
             _cmd_sessions_list(args)
+    elif args.command == "auth":
+        if args.auth_command == "google":
+            _cmd_auth_google(args)
     else:  # pragma: no cover
         parser.print_help()
         sys.exit(1)
