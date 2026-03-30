@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
+
 import pytest
 
 from openrattler.models.messages import UniversalMessage, create_message
@@ -282,6 +284,8 @@ class TestEchoChamberRegression:
         proc = _make_processor(response_content="something", tmp_path=tmp_path)
         await proc.run_cycle()
         key1 = proc._runtime.initialize_session.await_args_list[0][0][0]
+        # Sleep 1 ms so _utcnow_iso() produces a different microsecond timestamp.
+        await asyncio.sleep(0.001)
         await proc.run_cycle()
         key2 = proc._runtime.initialize_session.await_args_list[1][0][0]
         assert key1 != key2
