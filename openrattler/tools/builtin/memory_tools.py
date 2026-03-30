@@ -1,19 +1,46 @@
 """Narrative memory tools — update_memory_narrative, update_user_profile,
-update_identity, memory_read, and memory_write.
+update_identity, update_heartbeat, memory_read, and memory_write.
 
 These tools give the agent write access to its runtime identity files and
 structured memory store:
 
-- ``MEMORY.md``   — free-form working memory narrative (append or replace)
-- ``USER.md``     — structured user profile (always a full replace)
-- ``IDENTITY.md`` — operational identity: name, creature, vibe (always a full replace)
-- ``memory.json`` — structured key-value fact store (read/write via MemoryStore)
+- ``MEMORY.md``    — free-form working memory narrative (append or replace)
+- ``USER.md``      — structured user profile (always a full replace)
+- ``IDENTITY.md``  — operational identity: name, creature, vibe (always a full replace)
+- ``HEARTBEAT.md`` — autonomous monitoring routine (always a full replace; elevated
+                     approval path — diff display + mandatory rationale required)
+- ``memory.json``  — structured key-value fact store (read/write via MemoryStore)
 
 All file writes are:
 
 1. Validated against token limits (approximated as ``len(text) // 4``).
 2. Reviewed by ``MemorySecurityAgent`` before touching disk.
 3. Written atomically via temp-file + rename.
+
+TOKEN LIMITS
+------------
+- ``narrative_max_write_tokens`` caps the size of a single write to MEMORY.md.
+- ``narrative_max_tokens`` caps the total size of MEMORY.md.
+- ``user_profile_max_tokens`` caps the total size of USER.md.
+- ``identity_max_tokens`` caps the total size of IDENTITY.md.
+
+Limits come from ``MemoryConfig`` (defaults: 300 write / 2000 file / 500 user / 500 identity).
+The tool response always reports current token usage so the agent knows when
+to prune.  Near-80% capacity triggers an explicit pruning suggestion.
+
+HEARTBEAT.MD ELEVATED APPROVAL PATH
+-------------------------------------
+``update_heartbeat`` enforces stricter rules than other identity tools because
+HEARTBEAT.md governs autonomous behaviour — modifying it is more consequential
+than updating USER.md.
+
+1. ``rationale`` is a required argument.  If absent or empty the tool returns
+   an error *before* reaching ``MemorySecurityAgent`` — the agent cannot make
+   undocumented autonomous routine changes.
+2. Approval metadata includes ``change_type="autonomous_routine_update"`` and a
+   unified diff of old vs new content so reviewers see exactly what changes.
+3. ``MemorySecurityAgent`` checks specifically for scope creep: capability
+   additions or weakened constraints.
 
 TOKEN LIMITS
 ------------
@@ -42,6 +69,7 @@ SECURITY NOTES
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -260,6 +288,50 @@ class NarrativeMemoryTools:
                 ),
             ),
             self._update_identity,
+        )
+        registry.register(
+            ToolDefinition(
+                name="update_heartbeat",
+                description=(
+                    "Replace the agent's autonomous monitoring routine (HEARTBEAT.md) with "
+                    "updated content. Requires an explicit rationale tied to observed evidence. "
+                    "Always rewrites the entire file — include all monitoring instructions."
+                    "\n\n⚠️ This changes your agent's autonomous monitoring routine and "
+                    "requires a mandatory rationale argument."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": (
+                                "The complete new contents of HEARTBEAT.md in Markdown. "
+                                "Include all monitoring tasks, urgency criteria, and "
+                                "reporting instructions."
+                            ),
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": (
+                                "Required. A clear explanation of why this change is needed, "
+                                "tied to specific observed evidence (e.g. 'user engagement "
+                                "patterns show X', 'repeated false positives on topic Y'). "
+                                "The update will be rejected if this is absent or empty."
+                            ),
+                        },
+                    },
+                    "required": ["content", "rationale"],
+                },
+                trust_level_required=TrustLevel.main,
+                requires_approval=False,
+                security_notes=(
+                    "Elevated approval path: rationale is required and validated before "
+                    "MemorySecurityAgent review. Approval metadata includes unified diff "
+                    "and change_type='autonomous_routine_update' to signal elevated review. "
+                    "Atomic write (temp + rename). Token limit enforced before review."
+                ),
+            ),
+            self._update_heartbeat,
         )
         if self._memory_store is not None:
             registry.register(
@@ -502,6 +574,80 @@ class NarrativeMemoryTools:
         total_tokens = _approx_tokens(new_content)
         return self._status_message("IDENTITY.md", total_tokens, max_tokens)
 
+    async def _update_heartbeat(self, content: str, rationale: str = "") -> str:
+        """Handler for update_heartbeat.
+
+        Elevated approval path for HEARTBEAT.md:
+        - Rejects the write before MemorySecurityAgent if rationale is absent/empty.
+        - Passes ``change_type="autonomous_routine_update"`` and a unified diff in
+          the security review metadata so the reviewer sees exactly what changes.
+
+        Args:
+            content:   The complete new contents of HEARTBEAT.md.
+            rationale: Required explanation tied to observed evidence.
+
+        Returns:
+            A status string, an error message, or a rejection notice.
+        """
+        # Reject before security review if rationale is absent or empty.
+        if not rationale or not rationale.strip():
+            return (
+                "Error: HEARTBEAT.md updates require an explicit rationale tied to "
+                "observed evidence."
+            )
+
+        max_tokens = self._config.identity_max_tokens
+        write_tokens = _approx_tokens(content)
+
+        if write_tokens > max_tokens:
+            return (
+                f"Error: content is approximately {write_tokens} tokens, "
+                f"exceeding the HEARTBEAT.md limit of {max_tokens}. "
+                f"Please shorten and try again."
+            )
+
+        heartbeat_path = self._identity_dir / "HEARTBEAT.md"
+        current_content = ""
+        if heartbeat_path.exists():
+            try:
+                current_content = heartbeat_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+
+        new_content = content.strip()
+        unified_diff = self._build_unified_diff(current_content, new_content, "HEARTBEAT.md")
+
+        # Security review with elevated metadata for HEARTBEAT.md.
+        diff = {
+            "file": "HEARTBEAT.md",
+            "change_type": "autonomous_routine_update",
+            "rationale": rationale.strip(),
+            "diff": unified_diff,
+            "added": {},
+            "modified": {
+                "heartbeat_content": {"old": current_content[:200], "new": new_content[:200]}
+            },
+            "removed": {},
+        }
+        security_result = await self._security_agent.review_memory_change(
+            agent_id="main",
+            diff=diff,
+            session_key=_TOOLS_SESSION_KEY,
+        )
+        if security_result.suspicious:
+            if self._on_security_alert is not None:
+                await self._on_security_alert("HEARTBEAT.md", security_result.reason or "")
+            return f"Error: write blocked by security review. Reason: {security_result.reason}"
+
+        # Atomic write
+        try:
+            await asyncio.to_thread(_atomic_write, heartbeat_path, new_content)
+        except OSError as exc:
+            return f"Error: failed to write HEARTBEAT.md: {exc}"
+
+        total_tokens = _approx_tokens(new_content)
+        return self._status_message("HEARTBEAT.md", total_tokens, max_tokens)
+
     async def _memory_read(self, key: str = "") -> str:
         """Handler for memory_read.
 
@@ -594,6 +740,29 @@ class NarrativeMemoryTools:
             "modified": {},
             "removed": {},
         }
+
+    @staticmethod
+    def _build_unified_diff(current: str, new: str, filename: str) -> str:
+        """Generate a unified diff string between *current* and *new* content.
+
+        Used in HEARTBEAT.md approval metadata so reviewers see exactly what changes.
+        Returns a non-empty string even when both inputs are empty (first-time write).
+        """
+        current_lines = current.splitlines(keepends=True)
+        new_lines = new.splitlines(keepends=True)
+        diff_lines = list(
+            difflib.unified_diff(
+                current_lines,
+                new_lines,
+                fromfile=f"a/{filename}",
+                tofile=f"b/{filename}",
+            )
+        )
+        if diff_lines:
+            return "".join(diff_lines)
+        if not current and new:
+            return f"--- /dev/null\n+++ b/{filename}\n@@ -0,0 +1 @@\n+{new[:100]}\n"
+        return f"(no diff — content identical)"
 
     @staticmethod
     def _status_message(filename: str, used_tokens: int, max_tokens: int) -> str:

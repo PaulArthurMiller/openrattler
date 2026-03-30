@@ -360,6 +360,27 @@ class HeartbeatConfig(BaseModel):
             "How often (in minutes) the heartbeat turn runs. " "Default 60 (hourly). Minimum 1."
         ),
     )
+    log_context_entries: int = Field(
+        default=7,
+        ge=1,
+        le=50,
+        description=(
+            "How many recent heartbeat log entries are injected into each heartbeat "
+            "system prompt.  Default 7 suits an active daily user.  Raise to 20–30 "
+            "for users with low direct-interaction periods (e.g. background monitoring "
+            "use cases) where pattern detection requires a longer lookback window."
+        ),
+    )
+    log_max_retained: int = Field(
+        default=100,
+        ge=10,
+        description=(
+            "Total heartbeat log entries kept on disk.  Intentionally larger than "
+            "log_context_entries — the audit trail and the LLM context window have "
+            "different optimal sizes.  100 entries at 60-min intervals ≈ ~4 days "
+            "of full retention."
+        ),
+    )
 
 
 class GoogleAuthConfig(BaseModel):

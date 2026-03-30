@@ -354,35 +354,32 @@ class TestReceiveSecurity:
     async def test_receive_rejects_unknown_sender(
         self, adapter_with_audit: EmailAdapter, audit: AuditLog
     ) -> None:
-        # receive() catches PermissionError internally (hotfix 633c8a4: stop crash on bad msg).
-        # The rejection is verified via the audit log; we disconnect after the first rejection
-        # to make receive() exit (raising EOFError) rather than loop forever on the mock.
-        raw = _make_raw_email(from_addr=_UNKNOWN_SENDER)
-        call_count = 0
+        # The adapter silently skips rejected senders and keeps polling (does NOT raise).
+        # Simulate: first IMAP poll returns rejected sender, second returns valid message.
+        raw_rejected = _make_raw_email(from_addr=_UNKNOWN_SENDER)
+        raw_valid = _make_raw_email(from_addr=_ALLOWED_SENDER)
+        imap_results = [[raw_rejected], [raw_valid]]
 
-        def _fetch_side_effect(*_args: object, **_kwargs: object) -> list:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return [raw]
-            # After the rejection is processed, disconnect so receive() exits.
-            adapter_with_audit._connected = False
-            return []
+        async def fake_to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            if fn.__name__ == "_fetch_unseen":
+                # Serve controlled IMAP results; fall back to empty when exhausted.
+                return imap_results.pop(0) if imap_results else []
+            # All other functions (e.g. AuditLog._sync_append) run synchronously.
+            return fn(*args, **kwargs)
 
-        with (
-            patch(
-                "openrattler.channels.email_adapter._fetch_unseen",
-                side_effect=_fetch_side_effect,
-            ),
-            patch("asyncio.sleep"),
-        ):  # skip poll delay so the test is fast
-            await adapter_with_audit.connect()
-            with pytest.raises(EOFError):
-                await adapter_with_audit.receive()
+        with patch(
+            "openrattler.channels.email_adapter.asyncio.to_thread", side_effect=fake_to_thread
+        ):
+            with patch("openrattler.channels.email_adapter.asyncio.sleep", new=AsyncMock()):
+                await adapter_with_audit.connect()
+                msg = await adapter_with_audit.receive()
 
+        # Rejected sender is audit-logged; adapter recovers and returns the next valid message.
         events = await audit.query(event_type="email_sender_rejected")
         assert len(events) == 1
         assert events[0].details["from_address"] == _UNKNOWN_SENDER
+        # The valid message is returned, not the rejected one.
+        assert msg.params["from_address"] == _ALLOWED_SENDER
 
     async def test_receive_suspicious_content_logged(
         self, adapter_with_audit: EmailAdapter, audit: AuditLog
@@ -412,7 +409,8 @@ class TestReceiveSecurity:
     async def test_receive_rate_limited(
         self, adapter_with_audit: EmailAdapter, audit: AuditLog
     ) -> None:
-        # Use a rate limiter with a very low limit
+        # The adapter skips rate-limited senders and keeps polling (does NOT raise).
+        # Verify: rate_limited audit event is emitted, adapter recovers via disconnect.
         tight_rl = RateLimiter(max_per_minute=1, max_per_hour=1)
         config = _make_config()
         limited_adapter = EmailAdapter(config, agent_id="main", rate_limiter=tight_rl, audit=audit)
@@ -428,33 +426,24 @@ class TestReceiveSecurity:
             "openrattler.channels.email_adapter.asyncio.to_thread", side_effect=fake_to_thread
         ):
             await limited_adapter.connect()
-            # First message succeeds
+            # First receive succeeds; this also records a rate-limiter hit.
             msg1 = await limited_adapter.receive()
             assert isinstance(msg1, UniversalMessage)
 
-        # Second call: rate-limited. receive() catches PermissionError internally (hotfix
-        # 633c8a4), so we disconnect after the first rejection to make receive() exit.
-        rate_call = 0
+        # Second receive: rate limit is exceeded → audit-logged → adapter keeps polling.
+        # Use fake_sleep to disconnect after the first sleep (breaks the infinite loop).
+        async def fake_sleep_disconnect(seconds: float) -> None:
+            limited_adapter._connected = False  # trigger EOFError on next loop iteration
 
-        async def fake_to_thread_then_disconnect(fn: Any, *args: Any, **kwargs: Any) -> Any:
-            nonlocal rate_call
-            if fn.__name__ == "_fetch_unseen":
-                rate_call += 1
-                if rate_call == 1:
-                    return [raw]
-                limited_adapter._connected = False
-                return []
-            return fn(*args, **kwargs)
-
-        with (
-            patch(
-                "openrattler.channels.email_adapter.asyncio.to_thread",
-                side_effect=fake_to_thread_then_disconnect,
-            ),
-            patch("asyncio.sleep"),
+        with patch(
+            "openrattler.channels.email_adapter.asyncio.to_thread", side_effect=fake_to_thread
         ):
-            with pytest.raises(EOFError):
-                await limited_adapter.receive()
+            with patch(
+                "openrattler.channels.email_adapter.asyncio.sleep",
+                side_effect=fake_sleep_disconnect,
+            ):
+                with pytest.raises(EOFError):
+                    await limited_adapter.receive()
 
         events = await audit.query(event_type="email_rate_limited")
         assert len(events) >= 1

@@ -1185,4 +1185,83 @@ Each build piece is designed so that when you receive it for review, you're look
 - **Config/CLI (Phase 9-10):** Does `init` create everything needed? Can you chat with the mocked agent?
 - **Gateway/Creator (Phase 11-12):** Are auth tokens validated? Do spawn limits hold?
 - **Integration (Phase 15):** Do the security tests actually prove isolation?
-- 
+- - **Heartbeat (Phase 20+):** Are session keys unique per cycle? Does log pruning fire? Is HEARTBEAT.md rationale enforced?
+
+---
+
+## Build Piece 20.1 Backlog Items
+
+These items are prerequisites for the Bayesian heartbeat evaluation loop. The call-sites
+and data schemas are defined in Build Piece 20.1; the implementations come later.
+
+### Backlog Item: CalibrationAgent Subagent
+
+*Prerequisite for: Bayesian heartbeat evaluation loop*
+
+A dedicated subagent spawned by `HeartbeatProcessor.run_cycle()` at the stub call-site
+defined in Build Piece 20.1. Responsible for evaluating prediction → outcome pairs,
+updating confidence weights in `calibration_state.json`, and optionally proposing
+`HEARTBEAT.md` revisions.
+
+Interface contract (input/output) is defined in the TODO block in `heartbeat.py`.
+Do not finalize this spec until the session lookup tool is available (see below) —
+the CalibrationAgent's outcome evaluation is only meaningful if it can read CLI session
+excerpts to observe post-heartbeat user behavior.
+
+Security constraints:
+- Read-only access to logs and session excerpts
+- Cannot directly modify any file — returns structured data to HeartbeatProcessor
+- Cannot spawn further subagents
+- Its session is ephemeral (not retained in heartbeat log)
+- `HEARTBEAT.md` revision proposals route through `MemorySecurityAgent`, never applied directly
+
+---
+
+### Backlog Item: Session Lookup Tool
+
+*Prerequisite for: CalibrationAgent (above)*
+
+A tool available to the main agent and to the CalibrationAgent that reads recent turns
+from a named session. Required for the CalibrationAgent to observe whether Paul engaged
+with flagged topics after a heartbeat delivery — the core signal for outcome evaluation.
+
+Minimum interface:
+```python
+session_lookup(
+    session_key: str,        # e.g. "agent:main:main"
+    since_iso: str,          # ISO8601 timestamp — return turns after this time
+    max_turns: int = 20,     # token budget guard
+    summarize: bool = True,  # summarize if long, to prevent context blowout
+) -> list[dict]
+```
+
+Access constraints:
+- CalibrationAgent may only read `"agent:main:main"` (CLI session), time-bounded
+- Main agent requires approval to read any session other than its own
+- Cross-channel session reads (`agent:main:slack:*` etc.) require explicit approval
+
+---
+
+### Backlog Item: `calibration_state.json` Schema
+
+*Prerequisite for: CalibrationAgent (above)*
+
+Persistent store for the running Bayesian priors updated by CalibrationAgent. Lives at
+`{workspace}/identity/calibration_state.json`. Written by CalibrationAgent via
+HeartbeatProcessor (not directly). Read by HeartbeatProcessor at cycle start.
+
+Initial schema (to be extended when CalibrationAgent is specced):
+```json
+{
+  "schema_version": 1,
+  "last_updated": "ISO8601 UTC",
+  "urgency_calibration_factor": 1.0,
+  "topic_relevance_weights": {},
+  "user_engagement_patterns": {},
+  "prediction_accuracy": {
+    "total_predictions": 0,
+    "correct": 0,
+    "accuracy_rate": null
+  }
+}
+```

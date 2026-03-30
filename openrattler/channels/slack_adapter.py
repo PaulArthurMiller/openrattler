@@ -276,6 +276,12 @@ class SlackAdapter(ChannelAdapter):
         if not data.get("ok"):
             raise RuntimeError(f"Slack API error: {data.get('error', 'unknown')}")
 
+        # Mark the ts of the message we just posted so the polling loop never
+        # delivers our own outbound messages back as inbound user messages.
+        own_ts = data.get("ts", "")
+        if own_ts:
+            self._seen_ts.add(own_ts)
+
         await self._audit_log(
             "slack_sent",
             details={"channel_id": channel, "body_length": len(text)},
@@ -398,6 +404,12 @@ class SlackAdapter(ChannelAdapter):
         """
         sender_id = str(msg_dict.get("user") or msg_dict.get("bot_id", ""))
 
+        # --- Mark ts as seen immediately so any rejection below doesn't leave
+        # the message in an un-seen state that causes it to be re-fetched on
+        # every subsequent poll. ---
+        ts: str = str(msg_dict.get("ts", ""))
+        self._seen_ts.add(ts)
+
         # --- Sender allowlist ---
         if sender_id not in self._sender_allowlist:
             await self._audit_log(
@@ -405,10 +417,6 @@ class SlackAdapter(ChannelAdapter):
                 details={"sender_id": sender_id},
             )
             raise PermissionError(f"SlackAdapter: sender not in allowlist: {sender_id}")
-
-        # --- Mark ts as seen (after allowlist, before rate limit) ---
-        ts: str = str(msg_dict.get("ts", ""))
-        self._seen_ts.add(ts)
 
         # --- Session key + rate limit ---
         session_key = self.get_session_key({"sender_id": sender_id})

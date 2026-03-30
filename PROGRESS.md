@@ -1612,3 +1612,49 @@ The `complete()` interface uses OpenAI's message format as the canonical standar
 - All file I/O dispatched via `asyncio.to_thread()` to keep the event loop unblocked
 - `load_recent()` reads all lines then slices the tail — fast enough for typical session lengths; a backwards-seek optimisation can be added if needed
 - `list_sessions()` uses `Path.rglob("*.jsonl")` and `_path_to_key()` for the reverse mapping
+
+---
+
+## Build Piece 20.1 — Heartbeat Session Fix: Per-Cycle Isolation, Lightweight Log & Calibration Scaffold ✅
+
+**Branch:** `build/heartbeat-session-fix`
+**Date:** 2026-03-29
+
+### What Was Built
+
+1. **`openrattler/processors/heartbeat_log.py`** (new) — `HeartbeatLog` and `HeartbeatLogEntry` providing a structured, prunable cross-cycle audit trail for heartbeat cycles. Atomic writes throughout (`.tmp` + `os.replace`). All fields stub-ready for CalibrationAgent when it lands.
+
+2. **`openrattler/processors/heartbeat.py`** — Rewrote `run_cycle()` to generate unique per-cycle session keys (`agent:main:heartbeat:hb_{ISO8601+µs}`). Each cycle's session is fresh (empty history) — no prior heartbeat transcript ever re-enters the context window. Log context block injected from `heartbeat_log.jsonl`. Full CalibrationAgent TODO scaffold with interface contract documented.
+
+3. **`openrattler/config/loader.py`** — Added `log_context_entries` (default 7, range 1–50) and `log_max_retained` (default 100, min 10) to `HeartbeatConfig`. Intentionally decoupled (LLM context window vs. audit trail).
+
+4. **`openrattler/tools/builtin/memory_tools.py`** — Added `update_heartbeat` tool with elevated approval path: mandatory `rationale`, unified diff in security review metadata, `change_type="autonomous_routine_update"`. Rationale-absent updates rejected before `MemorySecurityAgent`.
+
+5. **`.claude/BUILD_GUIDE.md`** — Appended three backlog items: CalibrationAgent Subagent, Session Lookup Tool, `calibration_state.json` Schema.
+
+### Bug Fixes (Pre-existing, Found During Test Run)
+
+- **`tests/test_channels/test_email_adapter.py`** — `test_receive_rejects_unknown_sender` and `test_receive_rate_limited` expected `PermissionError` to bubble up, but the adapter catches it and keeps polling (fixed in the email live-test). Tests hung indefinitely. Fixed to verify audit log emission and use controlled fetch results / disconnect-via-fake-sleep pattern.
+
+- **`tests/test_channels/test_slack_adapter.py`** — Same issue in `test_receive_rejects_unknown_sender`, `test_receive_rate_limited`, and `test_allow_bot_messages_requires_allowlist`. Fixed with same pattern.
+
+- **Root cause of hanging tests:** `patch("openrattler.channels.email_adapter.asyncio.to_thread")` patches the global `asyncio` module singleton, intercepting `AuditLog._sync_append` calls too. Fixed by using `fn.__name__ == "_fetch_unseen"` guard in `fake_to_thread` and dispatching other functions directly.
+
+### Test Results
+
+- **1,564 passed, 1 skipped** (pre-existing skip)
+- New tests: 35 `test_heartbeat_log.py` + 6 `TestEchoChamberRegression` + 8 `TestHeartbeatConfig` + 8 `test_memory_tools.py` = ~57 new tests
+
+### Design Decisions
+
+- Per-cycle session key as ephemeral scratch-pad; `heartbeat_log.jsonl` is the sole cross-cycle state reaching the LLM
+- `log_context_entries` and `log_max_retained` intentionally decoupled (audit trail vs. context window)
+- `HEARTBEAT_SESSION_KEY` retained as deprecated module-level constant for legacy references only
+- `calibration_applied = False` on all entries until CalibrationAgent is wired in — enables pre/post quality analysis later
+- Prediction/outcome fields are stubs; schema is stable for when extraction logic lands
+
+### Backlog Items Added (Build Piece 20.1 forward work)
+
+- **CalibrationAgent Subagent** — prerequisite for Bayesian heartbeat evaluation loop
+- **Session Lookup Tool** — prerequisite for CalibrationAgent (reads CLI session turns)
+- **`calibration_state.json` Schema** — prerequisite for CalibrationAgent
