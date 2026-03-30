@@ -246,7 +246,8 @@ class HeartbeatProcessor(ProactiveProcessor):
 
         # 1. Generate per-cycle identifiers.
         cycle_id = f"hb_{_utcnow_iso()}"
-        session_key = f"agent:main:heartbeat:{cycle_id}"
+        # Replace dots (from microseconds) so the session key passes alphanumeric/hyphen/colon validation.
+        session_key = f"agent:main:heartbeat:{cycle_id}".replace(".", "_")
 
         log_max_retained = (
             self._config.heartbeat.log_max_retained if self._config is not None else 100
