@@ -19,6 +19,45 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Build Piece 37.2 — ResearchAgent Runtime and AgentCreator Integration (2026-03-31) ✅
+
+**Status:** Complete — PR open for review
+**Branch:** `build/37.2-research-agent-runtime`
+
+### What Was Built
+
+1. **`openrattler/agents/research/SKILL.md`** (new) — Skill prompt co-located with agent code. Establishes the SKILL.md pattern as the standard for all future subagents. Agent raises `FileNotFoundError` loudly on missing file — no silent degradation.
+
+2. **`openrattler/agents/research/config.py`** (new) — `ResearchAgentConfig` dataclass with mutable-default-safe `field(default_factory=...)` and `APPROVED_RESEARCH_MODELS` frozenset. Model override validation checks against this allowlist at spawn time.
+
+3. **`openrattler/agents/research/agent.py`** (new) — Full `ResearchAgent` implementation:
+   - `allowed_tools` property returns exactly `frozenset({"web_search", "web_fetch"})` — no others
+   - `_web_fetch` enforces max size, allowed content types, and request timeout; `_fetch_url` is separated for monkeypatching in tests
+   - Session is ephemeral — no `TranscriptStore` created or used
+   - UM not constructed until after sanitizer validates output
+
+4. **`openrattler/gateway/operations.py`** (new) — `KNOWN_OPERATIONS` registry with `OperationSpec` for all platform operations. `research_query` carries `params_schema_ref` pointing at `ResearchRequest`. Lazy `importlib` in `resolve_params_model` prevents circular imports.
+
+5. **`openrattler/agents/creator.py`** (updated) — Added `create_research_agent(message, audit)` as the authorized spawn pathway: validates operation, trust level (>= main), params as `ResearchRequest`, and model override against `APPROVED_RESEARCH_MODELS`. Writes `research_agent_spawned` audit event.
+
+6. **`tests/test_agents/test_research/test_agent.py`** (new) — 16 tests covering SKILL.md loading, tool allowlist, web_fetch constraints, pipeline stages, session isolation.
+
+7. **`tests/test_agents/test_research/test_creator_integration.py`** (new) — 14 tests covering operation recognition, trust level enforcement, params validation, model override validation, successful spawn + audit.
+
+### Test Results
+
+- **1,661 passed, 1 skipped** (30 new + 1,631 prior)
+- `black` — all new files clean ✅
+- `mypy openrattler/` — no issues in 83 source files ✅
+
+### Design Decisions
+
+- **`_fetch_url` separated from `_web_fetch`**: Tests can monkeypatch the single network method without touching constraint logic. Keeps security-relevant code paths under test without live network calls.
+- **Lazy import of `ResearchAgent` in `creator.py`**: `TYPE_CHECKING` guard for the type hint; runtime import inside the method body. Prevents circular imports at module load time while keeping the type hint visible to mypy.
+- **`SKILL.md` as the standard subagent prompt pattern**: Co-located with agent code, fail-loud on missing. Backlog note added to `.claude/BUILD_GUIDE.md` to migrate remaining inline prompts (social secretary, heartbeat, TASK_TEMPLATES) in a future cleanup build.
+
+---
+
 ## Build Piece 37.1 — ResearchAgent Models and Sanitization Pipeline (2026-03-31) ✅
 
 **Status:** Complete — PR open for review

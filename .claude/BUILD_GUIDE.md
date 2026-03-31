@@ -1265,3 +1265,32 @@ Initial schema (to be extended when CalibrationAgent is specced):
   }
 }
 ```
+
+---
+
+## Backlog Item: SKILL.md for Social Secretary and Other Prebuilt Agents
+
+*Established in Build Piece 37.2 as the standard subagent prompt pattern.*
+
+**Background:** Build Piece 37.2 established `SKILL.md` as the canonical pattern for
+subagent skill prompts. The ResearchAgent loads its prompt from
+`openrattler/agents/research/SKILL.md` at instantiation, and failing loudly on a
+missing file is a core safety guarantee.
+
+**Current exceptions (known technical debt):**
+
+- The social secretary agent (`openrattler/identity/templates/`) uses hardcoded system
+  prompt templates rather than a dedicated `SKILL.md` per agent type.
+- The heartbeat processor (`openrattler/processors/heartbeat.py`) assembles its prompt
+  from `HEARTBEAT.md` + session context — closer to the SKILL.md pattern but not
+  using the same load mechanism.
+- The `TASK_TEMPLATES` in `openrattler/agents/templates.py` embed system prompts as
+  inline strings rather than loading from SKILL.md files.
+
+**Future cleanup task:** For each prebuilt agent type, extract its inline system prompt
+into a `SKILL.md` file co-located with the agent's code, and update the instantiation
+code to load it with `FileNotFoundError` on miss. This makes skill prompts reviewable
+as versioned files, editable by developers without touching Python source, and
+consistent with the ResearchAgent pattern.
+
+Priority: low (functional but not consistent with the established pattern).

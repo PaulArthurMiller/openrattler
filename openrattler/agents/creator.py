@@ -15,6 +15,16 @@ CREATION FLOW
 7. Schedule timeout task
 8. Return ``AgentConfig``
 
+RESEARCH AGENT FLOW (create_research_agent)
+--------------------------------------------
+1. Validate operation == "research_query"
+2. Validate trust level >= main
+3. Parse UM params as ResearchRequest
+4. Validate model override against APPROVED_RESEARCH_MODELS allowlist
+5. Build ResearchAgentConfig
+6. Write audit log entry
+7. Return ResearchAgent instance (session is ephemeral — no transcript written)
+
 DESIGN DECISIONS
 -----------------
 - ``agent_registry`` is a plain ``dict[str, AgentConfig]`` owned by the
@@ -35,13 +45,17 @@ SECURITY NOTES
   it is never escalated.
 - ``kill_agent`` removes the config from the registry and cancels its timeout
   so resource consumption halts immediately.
+- ``create_research_agent`` validates the model override against
+  ``APPROVED_RESEARCH_MODELS``; arbitrary model strings are rejected.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+from pydantic import ValidationError
 
 from openrattler.agents.creator_validator import (
     AUTHORIZED_SPAWNERS,
@@ -49,6 +63,8 @@ from openrattler.agents.creator_validator import (
     SecurityError,
     SpawnLimitError,
 )
+from openrattler.agents.research.config import APPROVED_RESEARCH_MODELS, ResearchAgentConfig
+from openrattler.agents.research.models import ResearchRequest
 from openrattler.agents.templates import TASK_TEMPLATES
 from openrattler.models.agents import (
     AgentConfig,
@@ -57,8 +73,18 @@ from openrattler.models.agents import (
     TrustLevel,
 )
 from openrattler.models.audit import AuditEvent
+from openrattler.models.messages import UniversalMessage
 from openrattler.storage.audit import AuditLog
 from openrattler.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from openrattler.agents.research.agent import ResearchAgent
+
+# ---------------------------------------------------------------------------
+# Trust levels that may request research_query spawns (>= main)
+# ---------------------------------------------------------------------------
+
+_RESEARCH_ALLOWED_TRUST_LEVELS: frozenset[str] = frozenset({"main", "local", "security", "mcp"})
 
 # ---------------------------------------------------------------------------
 # Trust level ordering (lower index = lower privilege)
@@ -294,6 +320,103 @@ class AgentCreator:
                     )
 
         return await self.create_agent(request)
+
+    # ------------------------------------------------------------------
+    # Research agent creation
+    # ------------------------------------------------------------------
+
+    async def create_research_agent(
+        self,
+        message: UniversalMessage,
+        audit: AuditLog,
+    ) -> "ResearchAgent":
+        """Validate a research_query UM and return a configured ResearchAgent.
+
+        This is the authorised pathway for spawning a ResearchAgent.  It
+        validates trust level, parses the params block as a ResearchRequest,
+        and checks any model override against the approved allowlist before
+        returning an agent instance ready to execute.
+
+        Args:
+            message: ``UniversalMessage`` with ``operation="research_query"``
+                     and a ``params`` block that parses as ``ResearchRequest``.
+                     An optional ``"model"`` key in ``message.metadata`` can
+                     override the default model.
+            audit:   ``AuditLog`` passed to the spawned ``ResearchAgent``.
+
+        Returns:
+            A ``ResearchAgent`` instance.  Session is ephemeral — the caller
+            must not write its output to a persistent transcript.
+
+        Raises:
+            ValueError:    If ``message.operation != "research_query"`` or the
+                           params block fails ``ResearchRequest`` validation.
+            SecurityError: If the trust level is below ``main`` or the model
+                           override is not in the approved allowlist.
+        """
+        # 1. Operation check
+        if message.operation != "research_query":
+            raise ValueError(
+                f"create_research_agent requires operation='research_query'; "
+                f"got {message.operation!r}"
+            )
+
+        # 2. Trust level check (>= main)
+        if message.trust_level not in _RESEARCH_ALLOWED_TRUST_LEVELS:
+            await self._audit_log.log(
+                AuditEvent(
+                    event="research_agent_spawn_denied",
+                    agent_id=message.from_agent,
+                    session_key=message.session_key,
+                    trace_id=message.trace_id,
+                    details={
+                        "reason": f"trust level {message.trust_level!r} below minimum 'main'",
+                    },
+                )
+            )
+            raise SecurityError(
+                f"research_query requires trust level >= 'main'; " f"got {message.trust_level!r}"
+            )
+
+        # 3. Parse params as ResearchRequest
+        try:
+            ResearchRequest(**message.params)
+        except (ValidationError, TypeError) as exc:
+            raise ValueError(f"Invalid ResearchRequest params: {exc}") from exc
+
+        # 4. Validate model override
+        model_override: Optional[str] = message.metadata.get("model")
+        if model_override is not None and model_override not in APPROVED_RESEARCH_MODELS:
+            raise SecurityError(
+                f"Model {model_override!r} is not in the approved research model allowlist. "
+                f"Approved models: {sorted(APPROVED_RESEARCH_MODELS)}"
+            )
+
+        # 5. Build config (apply model override when present)
+        if model_override is not None:
+            config = ResearchAgentConfig(model=model_override)
+        else:
+            config = ResearchAgentConfig()
+
+        # 6. Audit log
+        await self._audit_log.log(
+            AuditEvent(
+                event="research_agent_spawned",
+                agent_id=message.from_agent,
+                session_key=message.session_key,
+                trace_id=message.trace_id,
+                details={
+                    "query": message.params.get("query", ""),
+                    "model": config.model,
+                    "trust_level": message.trust_level,
+                },
+            )
+        )
+
+        # 7. Instantiate and return (import here to avoid top-level circular deps)
+        from openrattler.agents.research.agent import ResearchAgent
+
+        return ResearchAgent(config=config, audit=audit)
 
     # ------------------------------------------------------------------
     # Private helpers
