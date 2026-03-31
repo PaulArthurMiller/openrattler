@@ -19,6 +19,48 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Build Piece 37.1 — ResearchAgent Models and Sanitization Pipeline (2026-03-31) ✅
+
+**Status:** Complete — PR open for review
+**Branch:** `build/37-research-agent`
+
+### What Was Built
+
+1. **`openrattler/security/sanitization.py`** (new) — Re-exports `SUSPICIOUS_PATTERNS` and `scan_for_suspicious_content` from `openrattler.security.patterns`. Single stable import point for all sanitization pipelines; no pattern duplication.
+
+2. **`openrattler/agents/research/models.py`** (new) — All Pydantic v2 models for the research subsystem:
+   - `SourceType` / `OutputFormat` enums
+   - `ResearchRequest` — input contract; query max 300 chars, focus_terms max 10 items/60 chars/0.0–1.0 weight, max_results 1–10, exclude_domains validated as RFC 1035 domain strings
+   - `CitationRecord` — HTTP/HTTPS URL enforced; `domain` always derived from `url` via `field_validator(mode="before")` + `model_validator(mode="after")` (source cannot assert its own domain)
+   - `ResearchResult` — summary hard-capped at 2000 chars; warnings max 5 items × 200 chars
+   - `ResearchError` — message max 200 chars
+
+3. **`openrattler/agents/research/__init__.py`** (new) — Package init with public exports.
+
+4. **`openrattler/agents/research/sanitizer.py`** (new) — Two-stage output sanitization pipeline:
+   - Stage 1: `scan_for_suspicious_content` on summary + citation title/author; hard rejection on any match
+   - Stage 2: Pydantic `ResearchResult` construction; rejection on any validation failure (length, URL, citation count vs max_results)
+   - Structured audit log entry on every invocation (pass or fail) with `trace_id` linkage
+   - Never raises; all failure modes return `ResearchError`
+
+5. **`tests/test_agents/test_research/test_models.py`** (new) — 32 tests covering all model validation rules.
+
+6. **`tests/test_agents/test_research/test_sanitizer.py`** (new) — 17 tests covering both pipeline stages, audit invariants, never-raises guarantee, and pattern import verification.
+
+### Test Results
+
+- **1,631 passed, 1 skipped** (49 new + 1,582 prior)
+- `black --check` — new files clean ✅ (2 pre-existing violations in `anthropic_provider.py` and `sms_adapter.py` are out of scope)
+- `mypy openrattler/` — no issues in 80 source files ✅
+
+### Design Decisions
+
+- **`openrattler.security.sanitization` as re-export module**: Consumers get a stable, purpose-named import that insulates them from internal module structure. Pattern updates propagate automatically — no duplication risk.
+- **Domain derivation via dual validator**: `field_validator(mode="before")` provides a placeholder during validation; `model_validator(mode="after")` performs the authoritative derivation once `url` is guaranteed to be valid. This prevents the source from ever influencing the domain value.
+- **Citation count checked before Pydantic**: The `max_results` guard runs before Pydantic construction so the audit reason string says "citation count N exceeds max_results M" rather than a generic validation error.
+- **Audit entry before return on all paths**: Written before the `return` statement on every code path, including the outer `try/except` safety net, so no sanitization decision is ever unlogged.
+
+---
 
 ## Build 19.1 — Google OAuth Credential Manager (2026-03-27) ✅
 
