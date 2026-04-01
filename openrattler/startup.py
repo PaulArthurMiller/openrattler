@@ -46,6 +46,7 @@ import sys
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from openrattler.agents.creator import AgentCreator
 from openrattler.agents.providers.anthropic_provider import AnthropicProvider
 from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.providers.openai_provider import OpenAIProvider
@@ -58,14 +59,20 @@ from openrattler.config.loader import (
     ToolsConfig,
     load_config,
 )
-from openrattler.identity.loader import RUNTIME_FILES, TEMPLATE_FILES, IdentityLoader
+from openrattler.identity.loader import (
+    RUNTIME_FILES,
+    TEMPLATE_FILES,
+    IdentityLoader,
+    populate_identity_dir,
+)
 from openrattler.tools.builtin.memory_tools import NarrativeMemoryTools
+from openrattler.tools.builtin.research_tools import ResearchTools
 from openrattler.gateway.auth import TokenAuth
 from openrattler.gateway.scheduler import ProcessorScheduler
 from openrattler.gateway.server import Gateway
 from openrattler.mcp.bridge import MCPToolBridge
 from openrattler.mcp.manager import MCPManager
-from openrattler.models.agents import AgentConfig, TrustLevel
+from openrattler.models.agents import AgentConfig, AgentSpawnLimits, TrustLevel
 from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage, create_message
 from openrattler.models.sessions import Session
@@ -273,45 +280,9 @@ def _build_channel_adapters(
     return adapters
 
 
-def _populate_identity_dir(identity_dir: Path) -> None:
-    """Ensure the runtime identity directory contains the expected files.
-
-    - Template files (SOUL.md, IDENTITY.md, BOOTSTRAP.md, HEARTBEAT.md) are
-      copied from the package templates directory if they do not yet exist in
-      ``identity_dir``.  Existing user-customised copies are never overwritten.
-    - Runtime files (USER.md, MEMORY.md) are created as empty files if absent.
-      They are never overwritten or populated from a template.
-    - ``.init_date`` is written once on first population with the current UTC
-      date.  It is never overwritten on subsequent starts.
-
-    Security notes:
-    - USER.md is never created with content here — it is always populated
-      through the ``update_user_profile`` tool (which runs the security review
-      gate) after the bootstrap flow.
-    - Existing identity files are never overwritten — user customisations are
-      preserved across restarts.
-    """
-    from datetime import datetime, timezone
-
-    from openrattler.identity.loader import _TEMPLATES_DIR
-
-    for filename in TEMPLATE_FILES:
-        dest = identity_dir / filename
-        if not dest.exists():
-            src = _TEMPLATES_DIR / filename
-            if src.exists():
-                shutil.copy(src, dest)
-            else:
-                logger.warning("_populate_identity_dir: template %s not found", src)
-
-    for filename in RUNTIME_FILES:
-        runtime_path = identity_dir / filename
-        if not runtime_path.exists():
-            runtime_path.write_text("", encoding="utf-8")
-
-    init_date_path = identity_dir / ".init_date"
-    if not init_date_path.exists():
-        init_date_path.write_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"), encoding="utf-8")
+# _populate_identity_dir is now ``populate_identity_dir`` in identity/loader.py.
+# The alias below keeps any internal callers working during the transition.
+_populate_identity_dir = populate_identity_dir
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +696,20 @@ async def build_application(
         tool_registry=registry,
         config=config,
     )
+
+    # 11d. AgentCreator — the security chokepoint for all subagent spawning.
+    #      Owns an agent registry dict seeded with the main agent config.
+    #      ResearchTools uses this to spawn ephemeral ResearchAgent instances
+    #      through the authorised create_research_agent() pathway.
+    agent_registry: dict[str, AgentConfig] = {agent_config.agent_id: agent_config}
+    creator = AgentCreator(
+        config=agent_config,
+        spawn_limits=AgentSpawnLimits(),
+        agent_registry=agent_registry,
+        audit_log=audit,
+        tool_registry=registry,
+    )
+    ResearchTools(creator=creator, audit=audit).register_all(registry)
 
     # 12. AgentRuntime.
     runtime = AgentRuntime(

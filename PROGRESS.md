@@ -19,6 +19,85 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Build Piece 38.1 — ResearchAgent Tool Wiring and Runtime Integration (2026-04-01) ✅
+
+**Status:** Complete — PR open for review
+**Branch:** `build/38.1-research-tool-wiring`
+
+### What Was Built
+
+This piece completed the runtime wiring for the ResearchAgent, which existed as tested
+infrastructure (37.1/37.2) but was not connected to Corvus's tool loop.
+
+1. **`openrattler/tools/builtin/research_tools.py`** (new) — `ResearchTools` class with
+   `research_query` tool handler. All spawning goes through
+   `AgentCreator.create_research_agent()` — the authorised pathway. Handler constructs a
+   `UniversalMessage` with `operation="research_query"` and `trust_level="main"`, passes it
+   to `AgentCreator`, calls `agent.run(request, trace_id)`, and formats the result UM into
+   a human-readable string for Corvus.
+
+2. **`openrattler/identity/loader.py`** (updated) — Added `populate_identity_dir()` as a
+   public module-level function. Previously this logic lived as a private function inside
+   `startup.py`. Moving it to `identity/loader.py` is the correct home (all identity file
+   constants live here) and eliminates a coupling: both `startup.py` and `CLIChat.open()`
+   can call it without cross-module import.
+
+3. **`openrattler/startup.py`** (updated) — Added `AgentCreator` + `AgentSpawnLimits`
+   imports; instantiates `AgentCreator` (seeded with main agent config) after step 11b;
+   registers `ResearchTools` into the tool registry (step 11d). Replaced private
+   `_populate_identity_dir` with alias to the new public function.
+
+4. **`openrattler/cli/chat.py`** (updated) — Fixed a systemic gap: `CLIChat.open()` had
+   zero tool registration — memory tools and all other tools were "unknown tool" errors in
+   CLI mode. Added: `populate_identity_dir`, `MemorySecurityAgent`, `NarrativeMemoryTools`,
+   `AgentCreator`, `ResearchTools`, `_resolve_agent_tools` (so CLI trust-level defaults
+   match the full server). Also added `IdentityLoader` so Corvus's identity prompt is
+   loaded in CLI mode.
+
+5. **`openrattler/config/loader.py`** (updated) — Added `research_query` to
+   `ToolsConfig` default `trust_defaults.main` list (for new installs).
+
+6. **`~/.openrattler/config.json`** (updated) — Added `research_query` to user's
+   `trust_defaults.main` (for this existing installation).
+
+7. **`tests/test_tools/test_research_tools.py`** (new) — 12 tests covering registration,
+   schema, AgentCreator interaction, success/error formatting, spawn-failure safety.
+
+### Test Results
+
+- **1,673 passed, 1 skipped** (12 new + 1,661 prior)
+- `black` — all new and modified files clean ✅
+- `mypy openrattler/` — no issues in 84 source files ✅
+
+### Live Test
+
+End-to-end CLI test confirmed:
+- Corvus invokes `research_query` → `AgentCreator.create_research_agent()` → `ResearchAgent.run()`
+- The result `UniversalMessage` flows back to Corvus correctly
+- Stub response is well-formed: summary + "no sources" note, no crashes
+- Corvus presents the UM contents clearly and accurately diagnoses the stub state
+
+### Design Decisions
+
+- **`AgentCreator.create_research_agent()` as the mandatory spawn pathway**: The tool
+  handler never directly instantiates `ResearchAgent` — all spawning goes through
+  `AgentCreator`, preserving the trust-level validation and audit trail.
+- **`on_security_alert=None` in CLIChat**: CLI mode has no channel adapters, so security
+  alert dispatch is a no-op. The `MemorySecurityAgent` still runs and the audit log still
+  captures the event — only the out-of-band notification is suppressed.
+- **`_resolve_agent_tools` called in CLIChat**: Without this, CLIChat's `agent_config`
+  had an empty `allowed_tools` list (default-deny), making all tools inaccessible in
+  CLI mode even after registration.
+
+### Known Limitations (next build)
+
+- `ResearchAgent._web_search()` is a stub returning `[]` — no real search results until
+  a search API (Brave, Serper, etc.) is connected.
+- `ResearchAgent._synthesize()` is a stub — real LLM synthesis via `AgentRuntime` is a
+  future piece.
+
+---
+
 ## Build Piece 37.2 — ResearchAgent Runtime and AgentCreator Integration (2026-03-31) ✅
 
 **Status:** Complete — PR open for review

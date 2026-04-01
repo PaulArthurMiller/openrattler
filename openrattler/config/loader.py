@@ -518,6 +518,7 @@ class ToolsConfig(BaseModel):
                 "update_identity",
                 "memory_read",
                 "memory_write",
+                "research_query",
             ],
             "local": [],
             "security": [],
