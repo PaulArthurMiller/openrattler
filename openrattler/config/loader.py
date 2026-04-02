@@ -532,6 +532,90 @@ class ToolsConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# SearchConfig / SerperConfigSection
+# ---------------------------------------------------------------------------
+
+
+class SerperConfigSection(BaseModel):
+    """
+    Serper-specific config loaded from config.json under 'search.serper'.
+
+    Maps to SerperConfig dataclass via SerperConfig.from_app_config().
+    Defaults mirror SerperConfig's own defaults so an empty JSON section
+    is fully valid.
+
+    Security note: The API key is NOT here. It is read from the
+    SERPER_API_KEY environment variable at call time by SerperClient.
+    """
+
+    enabled_endpoints: list[str] = Field(
+        default_factory=lambda: list(["search", "news", "images"]),
+        description=(
+            "Serper endpoints the ResearchAgent is permitted to call. "
+            "Subset of: search, images, news, videos, places, maps, "
+            "shopping, scholar, patents, autocomplete, lens."
+        ),
+    )
+    max_results: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum results per query (Serper 'num' parameter). Range 1–100.",
+    )
+    request_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="HTTP request timeout in seconds.",
+    )
+    max_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Retry attempts on transient 5xx / network errors.",
+    )
+    retry_delay_seconds: float = Field(
+        default=1.0,
+        ge=0,
+        description="Seconds to wait between retries.",
+    )
+    max_response_bytes: int = Field(
+        default=512_000,
+        ge=1,
+        description="Maximum Serper response size in bytes before rejection.",
+    )
+    max_field_chars: int = Field(
+        default=2_000,
+        ge=1,
+        description="Maximum text chars in a single field before sanitizer flags it.",
+    )
+    credit_warning_threshold: int = Field(
+        default=500,
+        ge=0,
+        description="Emit a warning log when credits_remaining drops to or below this value.",
+    )
+    default_country: Optional[str] = Field(
+        default="us",
+        description="Default country code for results (ISO 3166-1 alpha-2).",
+    )
+    default_language: Optional[str] = Field(
+        default="en",
+        description="Default language for results (BCP 47).",
+    )
+    safe_search: Optional[str] = Field(
+        default="active",
+        description="Safe search setting: 'active', 'off', or None (Serper default).",
+    )
+
+
+class SearchConfig(BaseModel):
+    """Top-level search configuration."""
+
+    serper: SerperConfigSection = Field(
+        default_factory=SerperConfigSection,
+        description="Serper API integration settings.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # AppConfig — top-level configuration model
 # ---------------------------------------------------------------------------
 
@@ -605,6 +689,13 @@ class AppConfig(BaseModel):
         description=(
             "Google OAuth 2.0 credential configuration.  Shared by Gmail, Drive, "
             "and Calendar tool integrations."
+        ),
+    )
+    search: SearchConfig = Field(
+        default_factory=SearchConfig,
+        description=(
+            "Search API configuration. Currently contains Serper settings. "
+            "API key is read from SERPER_API_KEY environment variable, not stored here."
         ),
     )
 

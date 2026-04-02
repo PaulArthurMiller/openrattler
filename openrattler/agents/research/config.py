@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from openrattler.tools.search.serper_config import SerperConfig
+
 # ---------------------------------------------------------------------------
 # Approved model allowlist
 # ---------------------------------------------------------------------------
@@ -76,3 +78,4 @@ class ResearchAgentConfig:
     mcp_servers: list[str] = field(default_factory=list)
     request_timeout_seconds: int = 30
     skill_prompt_path: Path = field(default_factory=lambda: Path(__file__).parent / "SKILL.md")
+    serper_config: SerperConfig = field(default_factory=SerperConfig)

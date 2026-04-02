@@ -212,23 +212,58 @@ class ResearchAgent:
         return self._build_response_um(sanitized, from_agent, to_agent, session_key, trace_id)
 
     # ------------------------------------------------------------------
-    # web_search (stub)
+    # web_search — backed by Serper API (Window 1 sanitized)
     # ------------------------------------------------------------------
 
     async def _web_search(self, query: str) -> list[dict[str, Any]]:
         """Search the web for *query* and return a list of result dicts.
 
-        Each dict should have: ``url``, ``title``, ``source_type``.
+        Delegates to the Serper-backed ``web_search()`` function, which
+        enforces the endpoint allowlist, Window 1 sanitization, and all
+        HTTP-layer constraints before returning results.
 
-        TODO: Replace stub with real search API integration (e.g. Brave Search,
-              SerpAPI, or a self-hosted index).  The stub returns an empty list
-              so the pipeline can be tested end-to-end without live network calls.
+        Each returned dict has at minimum: ``url``, ``title``, ``source_type``.
 
-        Security note: URLs returned by the search API are passed to
-        ``_web_fetch``.  The fetch layer enforces HTTPS-only and content
-        type / size constraints before any content enters the context.
+        Security note: URLs returned here are passed to ``_web_fetch``.
+        The fetch layer enforces HTTPS-only and content type / size
+        constraints before any page content enters the context window.
         """
-        return []
+        from openrattler.tools.search.web_search_tool import web_search
+
+        result = await web_search(
+            params={"query": query, "endpoint": "search"},
+            config=self._config.serper_config,
+            trace_id=None,  # Client generates a uuid if not provided
+            audit_log_fn=None,
+        )
+
+        if result.get("status") != "ok":
+            # Non-ok means the search failed (network error, sanitization,
+            # auth, etc.). Log and return empty — the pipeline continues
+            # with synthesis of whatever fetch results exist.
+            logger.warning(
+                "_web_search: search returned status=%r error=%r query=%r",
+                result.get("status"),
+                result.get("error"),
+                query,
+            )
+            return []
+
+        # Map Serper results to the pipeline's expected format.
+        # source_type defaults to "general" for standard web results.
+        hits: list[dict[str, Any]] = []
+        for r in result.get("results", []):
+            url = r.get("url")
+            if not url:
+                continue
+            hits.append(
+                {
+                    "url": url,
+                    "title": r.get("title") or "",
+                    "source_type": "general",
+                }
+            )
+        return hits
 
     # ------------------------------------------------------------------
     # web_fetch
