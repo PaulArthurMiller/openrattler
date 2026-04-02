@@ -40,12 +40,17 @@ from openrattler.storage.audit import AuditLog
 def _make_config(
     tmp_path: Path, skill_exists: bool = True, **overrides: Any
 ) -> ResearchAgentConfig:
-    """Build a ResearchAgentConfig pointing at a real (or absent) SKILL.md."""
+    """Build a ResearchAgentConfig pointing at real (or absent) prompt files."""
     skill_path = tmp_path / "SKILL.md"
+    search_plan_path = tmp_path / "SEARCH_PLAN.md"
     if skill_exists:
         skill_path.write_text("# Test skill prompt\nYou are a research agent.", encoding="utf-8")
+        search_plan_path.write_text(
+            "# Test search plan prompt\nOutput a JSON object.", encoding="utf-8"
+        )
     defaults: dict[str, Any] = {
         "skill_prompt_path": skill_path,
+        "search_plan_path": search_plan_path,
         "max_fetch_size_bytes": 10_000,
         "request_timeout_seconds": 5,
         "allowed_content_types": ["text/html", "text/plain"],

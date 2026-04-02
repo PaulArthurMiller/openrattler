@@ -254,7 +254,9 @@ class SMSAdapter(ChannelAdapter):
         to = str(message.params.get("to", self._default_to_number))
         # Tool sends use params["body"]; alert dispatches use params["content"] or ["summary"].
         body = str(
-            message.params.get("body") or message.params.get("content") or message.params.get("summary", "")
+            message.params.get("body")
+            or message.params.get("content")
+            or message.params.get("summary", "")
         )
 
         url = f"{_API_BASE}/{self._account_sid}/Messages.json"
