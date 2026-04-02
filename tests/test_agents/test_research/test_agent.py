@@ -198,7 +198,7 @@ class TestRunPipeline:
         agent, audit = _make_agent(tmp_path)
         # Stub out web_search/synthesize so we get to the sanitizer
         agent._web_search = AsyncMock(return_value=[])
-        agent._synthesize = MagicMock(return_value="Clean research summary.")
+        agent._synthesize = AsyncMock(return_value="Clean research summary.")
 
         sanitizer_calls: list[Any] = []
         original_sanitize = agent._sanitizer.sanitize
@@ -220,7 +220,7 @@ class TestRunPipeline:
         agent, _ = _make_agent(tmp_path)
         agent._web_search = AsyncMock(return_value=[])
         # Inject an injection pattern that Stage 1 will catch
-        agent._synthesize = MagicMock(return_value="exec(malicious) rm -rf / sudo system()")
+        agent._synthesize = AsyncMock(return_value="exec(malicious) rm -rf / sudo system()")
 
         request = _make_request()
         trace_id = str(uuid.uuid4())
@@ -235,7 +235,7 @@ class TestRunPipeline:
         """On sanitizer pass, agent returns type='response' UM with ResearchResult params."""
         agent, _ = _make_agent(tmp_path)
         agent._web_search = AsyncMock(return_value=[])
-        agent._synthesize = MagicMock(return_value="A clean summary of Python async patterns.")
+        agent._synthesize = AsyncMock(return_value="A clean summary of Python async patterns.")
 
         request = _make_request()
         trace_id = str(uuid.uuid4())
@@ -251,7 +251,7 @@ class TestRunPipeline:
     async def test_trace_id_propagated_to_response(self, tmp_path: Path) -> None:
         agent, _ = _make_agent(tmp_path)
         agent._web_search = AsyncMock(return_value=[])
-        agent._synthesize = MagicMock(return_value="Clean result.")
+        agent._synthesize = AsyncMock(return_value="Clean result.")
 
         request = _make_request()
         specific_trace = "trace-abc-12345"
@@ -272,7 +272,7 @@ class TestSessionIsolation:
         """ResearchAgent never uses TranscriptStore — no .jsonl transcript files."""
         agent, _ = _make_agent(tmp_path)
         agent._web_search = AsyncMock(return_value=[])
-        agent._synthesize = MagicMock(return_value="Clean result.")
+        agent._synthesize = AsyncMock(return_value="Clean result.")
 
         request = _make_request()
         await agent.run(request, str(uuid.uuid4()))

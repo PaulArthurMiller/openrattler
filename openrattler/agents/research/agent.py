@@ -2,13 +2,14 @@
 
 The ResearchAgent executes a fixed pipeline:
 
-1. ``web_search``  — find candidate URLs for the query (stub; real search API
-                     integration is a future build piece).
+1. ``web_search``  — find candidate URLs for the query via the Serper API
+                     (Window 1 sanitized).
 2. ``web_fetch``   — fetch each candidate URL, applying security constraints
                      (max size, allowed content types, request timeout).
-3. ``_synthesize`` — combine fetched content into a structured summary
-                     (stub; real LLM synthesis via AgentRuntime is a future
-                     build piece).
+3. ``_synthesize`` — combine fetched content into a structured summary via
+                     a real LLM call (no tools, text-in text-out).  Falls back
+                     to a stub summary if no provider is injected or the call
+                     fails.
 4. ``sanitize``    — pass summary + citations through ``ResearchSanitizer``
                      before constructing the response UM.
 5. Build and return a ``UniversalMessage`` (type="response" on success,
@@ -26,9 +27,12 @@ SECURITY NOTES
 - ``_web_fetch`` enforces ``max_fetch_size_bytes``, ``allowed_content_types``,
   and ``request_timeout_seconds`` from ``ResearchAgentConfig``.  A response
   that exceeds any constraint is silently dropped (returns ``None``).
-- ``_synthesize`` is a stub.  Raw fetched content must never appear verbatim
-  in the summary — the sanitizer would catch injection patterns, but the stub
-  already avoids copying raw content.
+- ``_synthesize`` calls the LLM with ``tools=None`` — no tool loop is possible
+  during synthesis.  The sanitizer still runs on every synthesis output before
+  the UM is constructed.
+- Raw fetched content must never appear verbatim in the final summary.  The
+  sanitizer's Stage 1 pattern filter catches injection patterns, but the
+  synthesis prompt is also constructed to discourage verbatim repetition.
 - The agent never constructs the UM response itself until *after* the sanitizer
   has returned a validated ``ResearchResult`` or ``ResearchError``.
 """
@@ -41,6 +45,7 @@ from typing import Any, Optional
 
 import httpx
 
+from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.research.config import ResearchAgentConfig
 from openrattler.agents.research.models import (
     ResearchError,
@@ -95,7 +100,12 @@ class ResearchAgent:
       returned a validated result.
     """
 
-    def __init__(self, config: ResearchAgentConfig, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        config: ResearchAgentConfig,
+        audit: AuditLog,
+        provider: Optional[LLMProvider] = None,
+    ) -> None:
         skill_path = config.skill_prompt_path
         if not skill_path.exists():
             raise FileNotFoundError(
@@ -106,6 +116,9 @@ class ResearchAgent:
         self._config = config
         self._sanitizer = ResearchSanitizer(audit=audit)
         self._audit = audit
+        # LLM provider for synthesis.  None means use the stub fallback — preserves
+        # backward compatibility for tests that do not exercise synthesis.
+        self._provider = provider
 
     # ------------------------------------------------------------------
     # Public API
@@ -192,8 +205,8 @@ class ResearchAgent:
             if page is not None:
                 fetched.append(page)
 
-        # Phase 3: Synthesize (stub — real LLM synthesis is a future build)
-        raw_summary = self._synthesize(request, fetched)
+        # Phase 3: Synthesize via LLM (falls back to stub if no provider)
+        raw_summary = await self._synthesize(request, fetched)
 
         # Phase 4: Build raw citation dicts (one per fetched page)
         raw_citations = self._build_raw_citations(fetched)
@@ -349,24 +362,96 @@ class ResearchAgent:
             return str(response.url), content_type, response.content
 
     # ------------------------------------------------------------------
-    # Synthesize (stub)
+    # Synthesize — LLM call with stub fallback
     # ------------------------------------------------------------------
 
-    def _synthesize(
+    async def _synthesize(
         self,
         request: ResearchRequest,
         fetched: list[dict[str, Any]],
     ) -> str:
-        """Combine fetched content into a plain-text summary.
+        """Combine fetched content into a plain-text summary via LLM call.
 
-        TODO: Replace with real LLM synthesis via AgentRuntime.  The stub
-              produces a minimal summary from the query and any available
-              content snippets, capped at 2000 chars.
+        Calls ``self._provider.complete()`` with the SKILL.md as the system
+        prompt and the query + fetched page snippets as the user turn.  No
+        tools are exposed to the synthesis call — it is a single text-in,
+        text-out LLM call with no tool loop.
 
-        Security note: This method must never copy raw fetched content
-        verbatim into the summary.  The sanitizer's Stage 1 pattern filter
-        will catch injection patterns, but the stub already avoids forwarding
-        raw content — it produces an analyst summary of available metadata.
+        Falls back to ``_stub_synthesize`` when:
+        - ``self._provider`` is ``None`` (backward compat; existing tests that
+          do not exercise synthesis continue to work without a mock provider).
+        - The provider raises any exception (network error, API error, etc.).
+
+        Security notes:
+        - ``tools=None`` — no tool loop is possible during synthesis.
+        - The sanitizer always runs on the returned text before UM construction.
+        - Content forwarded to the LLM is already capped at 5 000 chars/page
+          by ``_web_fetch``; this method forwards up to ``request.max_results``
+          pages, keeping the prompt within Haiku's context limit.
+        - The synthesis prompt explicitly requests an analyst summary rather
+          than verbatim repetition of source content.
+        """
+        if self._provider is None:
+            return self._stub_synthesize(request, fetched)
+
+        messages = self._build_synthesis_messages(request, fetched)
+        # Strip the "anthropic/" provider-routing prefix — the provider client
+        # expects the bare model ID (e.g. "claude-haiku-4-5-20251001").
+        model = self._config.model.removeprefix("anthropic/")
+        try:
+            response = await self._provider.complete(
+                messages=messages,
+                tools=None,
+                model=model,
+                max_tokens=1024,
+            )
+            return response.content[:2000]
+        except Exception as exc:
+            logger.warning("_synthesize: LLM call failed (%s); falling back to stub summary", exc)
+            return self._stub_synthesize(request, fetched)
+
+    def _build_synthesis_messages(
+        self,
+        request: ResearchRequest,
+        fetched: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build the [system, user] message list for the synthesis LLM call.
+
+        System message: the full SKILL.md content loaded at instantiation.
+        User message:   the query plus formatted snippets from each fetched page.
+        """
+        user_parts: list[str] = [f"Research query: {request.query}\n"]
+
+        if fetched:
+            user_parts.append("Fetched sources:\n")
+            for i, page in enumerate(fetched[: request.max_results]):
+                title = page.get("title", "Untitled")
+                url = page.get("url", "")
+                content = page.get("content", "")[:5_000]
+                user_parts.append(f"[{i + 1}] {title} ({url})\n{content}\n")
+        else:
+            user_parts.append("No sources were retrieved for this query.")
+
+        user_parts.append(
+            "\nProvide a concise synthesis of the research findings. "
+            "Cover the key facts, note any conflicting information, and flag "
+            "any significant gaps. Do not repeat source text verbatim."
+        )
+
+        return [
+            {"role": "system", "content": self._skill_prompt},
+            {"role": "user", "content": "\n".join(user_parts)},
+        ]
+
+    def _stub_synthesize(
+        self,
+        request: ResearchRequest,
+        fetched: list[dict[str, Any]],
+    ) -> str:
+        """Fallback stub when no provider is available or the LLM call fails.
+
+        Produces a minimal metadata-only summary (no raw content) capped at
+        2 000 chars.  This is the same logic as the original stub implementation.
         """
         if not fetched:
             return (
