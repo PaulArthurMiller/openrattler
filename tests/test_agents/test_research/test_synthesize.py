@@ -27,6 +27,7 @@ from openrattler.agents.research.config import ResearchAgentConfig
 from openrattler.agents.research.models import ResearchRequest
 from openrattler.models.tools import ToolCall
 from openrattler.storage.audit import AuditLog
+from openrattler.tools.search.web_search_tool import WebSearchParams
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,11 +41,16 @@ _PAGE_CONTENT = "Async Python is great for I/O-bound tasks."
 def _make_config(
     tmp_path: Path, model: str = "anthropic/claude-haiku-4-5-20251001"
 ) -> ResearchAgentConfig:
-    """Build a ResearchAgentConfig with a real SKILL.md in tmp_path."""
+    """Build a ResearchAgentConfig with real SKILL.md and SEARCH_PLAN.md in tmp_path."""
     skill_path = tmp_path / "SKILL.md"
     skill_path.write_text(_SKILL_TEXT, encoding="utf-8")
+    search_plan_path = tmp_path / "SEARCH_PLAN.md"
+    search_plan_path.write_text(
+        "# Test search plan prompt\nOutput a JSON object.", encoding="utf-8"
+    )
     return ResearchAgentConfig(
         skill_prompt_path=skill_path,
+        search_plan_path=search_plan_path,
         model=model,
         max_fetch_size_bytes=10_000,
         request_timeout_seconds=5,
@@ -288,8 +294,14 @@ class TestSynthesizePipelineIntegration:
         request = _make_request()
         trace_id = "test-trace-001"
 
-        # Patch _web_search to return one hit, _fetch_url to return page content
+        # Mock _plan_search so the provider mock is reserved for synthesis only,
+        # then patch _web_search and _fetch_url to supply controlled content.
         with (
+            patch.object(
+                agent,
+                "_plan_search",
+                new=AsyncMock(return_value=WebSearchParams(query=_QUERY, endpoint="news")),
+            ),
             patch.object(
                 agent,
                 "_web_search",
@@ -335,7 +347,14 @@ class TestSynthesizePipelineIntegration:
             "sanitize",
             wraps=agent._sanitizer.sanitize,
         ) as mock_sanitize:
-            with (patch.object(agent, "_web_search", new=AsyncMock(return_value=[])),):
+            with (
+                patch.object(
+                    agent,
+                    "_plan_search",
+                    new=AsyncMock(return_value=WebSearchParams(query=_QUERY, endpoint="news")),
+                ),
+                patch.object(agent, "_web_search", new=AsyncMock(return_value=[])),
+            ):
                 await agent.run(request, "trace-002")
 
         mock_sanitize.assert_called_once()

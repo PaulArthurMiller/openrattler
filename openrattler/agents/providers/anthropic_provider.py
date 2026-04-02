@@ -96,12 +96,14 @@ def _convert_messages(
                     fn = tc.get("function", {})
                     raw_args = fn.get("arguments", "{}")
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": fn.get("name", ""),
-                        "input": args,
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": fn.get("name", ""),
+                            "input": args,
+                        }
+                    )
                 converted.append({"role": "assistant", "content": content_blocks})
             else:
                 converted.append({"role": "assistant", "content": content})

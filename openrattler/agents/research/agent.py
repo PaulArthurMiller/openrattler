@@ -1,17 +1,21 @@
 """ResearchAgent — a spawnable subagent for web research and synthesis.
 
-The ResearchAgent executes a fixed pipeline:
+The ResearchAgent executes a five-phase pipeline:
 
-1. ``web_search``  — find candidate URLs for the query via the Serper API
-                     (Window 1 sanitized).
-2. ``web_fetch``   — fetch each candidate URL, applying security constraints
-                     (max size, allowed content types, request timeout).
-3. ``_synthesize`` — combine fetched content into a structured summary via
-                     a real LLM call (no tools, text-in text-out).  Falls back
-                     to a stub summary if no provider is injected or the call
-                     fails.
-4. ``sanitize``    — pass summary + citations through ``ResearchSanitizer``
-                     before constructing the response UM.
+0. ``_plan_search``  — lightweight LLM call (SEARCH_PLAN.md system prompt) that
+                       produces a full ``WebSearchParams`` from the query and the
+                       list of currently-enabled Serper endpoints.  Falls back to
+                       sensible defaults if no provider is injected or the call fails.
+1. ``web_search``    — find candidate URLs via the Serper API using the planned
+                       parameters (Window 1 sanitized).
+2. ``web_fetch``     — fetch each candidate URL, applying security constraints
+                       (max size, allowed content types, request timeout).
+3. ``_synthesize``   — combine fetched content into a structured summary via
+                       a real LLM call (SKILL.md system prompt, no tools,
+                       text-in text-out).  Falls back to a stub if no provider
+                       is injected or the call fails.
+4. ``sanitize``      — pass summary + citations through ``ResearchSanitizer``
+                       before constructing the response UM.
 5. Build and return a ``UniversalMessage`` (type="response" on success,
    type="error" on sanitizer rejection).
 
@@ -20,7 +24,8 @@ KEY CONSTRAINTS
 - Session is ephemeral: no transcript is written to persistent storage.
   The sanitizer's audit log entries are the only persistent record.
 - Tool allowlist is exactly ``{"web_search", "web_fetch"}`` — no others.
-- SKILL.md must exist at instantiation; missing file raises immediately.
+- SKILL.md and SEARCH_PLAN.md must both exist at instantiation; missing
+  either file raises immediately.
 
 SECURITY NOTES
 --------------
@@ -39,9 +44,13 @@ SECURITY NOTES
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from openrattler.tools.search.web_search_tool import WebSearchParams
 
 import httpx
 
@@ -82,15 +91,16 @@ class ResearchAgent:
 
     Args:
         config: ``ResearchAgentConfig`` for this spawn.  ``skill_prompt_path``
-                must point to an existing ``SKILL.md`` file.
+                and ``search_plan_path`` must both point to existing files.
         audit:  ``AuditLog`` that receives sanitizer events.  This is the
                 only persistent record of the research session.
 
     Raises:
-        FileNotFoundError: If ``config.skill_prompt_path`` does not exist at
+        FileNotFoundError: If ``config.skill_prompt_path`` or
+                           ``config.search_plan_path`` does not exist at
                            instantiation time.  Silent degradation is not
-                           acceptable — a ResearchAgent without its skill
-                           prompt must not run.
+                           acceptable — a ResearchAgent without its prompts
+                           must not run.
 
     Security notes:
     - Session is ephemeral: no ``TranscriptStore`` is created or used.
@@ -112,12 +122,19 @@ class ResearchAgent:
                 f"ResearchAgent requires SKILL.md at {skill_path!r}; file not found. "
                 "A ResearchAgent without its skill prompt must not run silently degraded."
             )
+        search_plan_path = config.search_plan_path
+        if not search_plan_path.exists():
+            raise FileNotFoundError(
+                f"ResearchAgent requires SEARCH_PLAN.md at {search_plan_path!r}; file not found. "
+                "A ResearchAgent without its search plan prompt must not run silently degraded."
+            )
         self._skill_prompt: str = skill_path.read_text(encoding="utf-8")
+        self._search_plan_prompt: str = search_plan_path.read_text(encoding="utf-8")
         self._config = config
         self._sanitizer = ResearchSanitizer(audit=audit)
         self._audit = audit
-        # LLM provider for synthesis.  None means use the stub fallback — preserves
-        # backward compatibility for tests that do not exercise synthesis.
+        # LLM provider for planning and synthesis.  None means use stub/default
+        # fallbacks — preserves backward compatibility for tests without a provider.
         self._provider = provider
 
     # ------------------------------------------------------------------
@@ -133,6 +150,11 @@ class ResearchAgent:
     def skill_prompt(self) -> str:
         """The loaded SKILL.md content (read-only)."""
         return self._skill_prompt
+
+    @property
+    def search_plan_prompt(self) -> str:
+        """The loaded SEARCH_PLAN.md content (read-only)."""
+        return self._search_plan_prompt
 
     async def run(
         self,
@@ -192,8 +214,11 @@ class ResearchAgent:
         session_key: str,
     ) -> UniversalMessage:
         """Core pipeline — separated so the outer method can catch errors."""
-        # Phase 1: Search (stub — returns empty in this build piece)
-        search_hits = await self._web_search(request.query)
+        # Phase 0: Plan — LLM selects endpoint and filters for this query
+        search_params = await self._plan_search(request)
+
+        # Phase 1: Search — execute with the planned parameters
+        search_hits = await self._web_search(search_params)
 
         # Phase 2: Fetch each hit, applying safety constraints
         fetched: list[dict[str, Any]] = []
@@ -225,12 +250,88 @@ class ResearchAgent:
         return self._build_response_um(sanitized, from_agent, to_agent, session_key, trace_id)
 
     # ------------------------------------------------------------------
+    # _plan_search — LLM-driven search parameter selection
+    # ------------------------------------------------------------------
+
+    async def _plan_search(self, request: ResearchRequest) -> "WebSearchParams":
+        """Plan Serper query parameters via a lightweight LLM call.
+
+        Uses ``SEARCH_PLAN.md`` as the system prompt.  The user message
+        contains the query text and the sorted list of currently-enabled
+        endpoints from ``SerperConfig``.  Returns a validated
+        ``WebSearchParams`` instance.
+
+        Falls back to ``WebSearchParams(query=request.query, endpoint="news")``
+        on any failure: no provider injected, provider error, response is not
+        valid JSON, Pydantic validation fails, or the planned endpoint is not
+        in the enabled list.
+
+        Security notes:
+        - ``tools=None`` — no tool loop possible during planning.
+        - ``request.query`` has already been validated by ``ResearchRequest``
+          (max 300 chars, Pydantic).  The planner cannot expand it beyond
+          ``WebSearchParams.query`` field limits (max 500 chars).
+        - The planned endpoint is re-validated against ``enabled_endpoints``
+          after the LLM responds.  The LLM cannot enable a disallowed endpoint.
+        - All other planned parameters are validated by
+          ``WebSearchParams.model_validate()`` before reaching the client.
+        """
+        from openrattler.tools.search.web_search_tool import WebSearchParams
+
+        default = WebSearchParams(query=request.query, endpoint="news")
+
+        if self._provider is None:
+            return default
+
+        enabled = sorted(self._config.serper_config.enabled_endpoints)
+        user_content = (
+            f"Research query: {request.query}\n\n"
+            f"Enabled search endpoints: {', '.join(enabled)}\n\n"
+            "Construct the search parameters as a JSON object."
+        )
+        messages = [
+            {"role": "system", "content": self._search_plan_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        model = self._config.model.removeprefix("anthropic/")
+
+        try:
+            response = await self._provider.complete(
+                messages=messages,
+                tools=None,
+                model=model,
+                max_tokens=256,
+            )
+            raw = response.content.strip()
+            # Strip markdown code fences if the LLM wraps the JSON
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            parsed = json.loads(raw)
+            params = WebSearchParams.model_validate(parsed)
+            # Re-validate: the LLM cannot enable an endpoint outside the allowlist
+            if params.endpoint not in self._config.serper_config.enabled_endpoints:
+                logger.warning(
+                    "_plan_search: planned endpoint %r not in enabled_endpoints %r; using default",
+                    params.endpoint,
+                    enabled,
+                )
+                return default
+            return params
+        except Exception as exc:
+            logger.warning("_plan_search: failed (%s); using default search params", exc)
+            return default
+
+    # ------------------------------------------------------------------
     # web_search — backed by Serper API (Window 1 sanitized)
     # ------------------------------------------------------------------
 
-    async def _web_search(self, query: str) -> list[dict[str, Any]]:
-        """Search the web for *query* and return a list of result dicts.
+    async def _web_search(self, params: "WebSearchParams") -> list[dict[str, Any]]:
+        """Execute the planned search and return a list of result dicts.
 
+        Accepts a ``WebSearchParams`` instance produced by ``_plan_search``.
         Delegates to the Serper-backed ``web_search()`` function, which
         enforces the endpoint allowlist, Window 1 sanitization, and all
         HTTP-layer constraints before returning results.
@@ -244,7 +345,7 @@ class ResearchAgent:
         from openrattler.tools.search.web_search_tool import web_search
 
         result = await web_search(
-            params={"query": query, "endpoint": "news"},
+            params=params.model_dump(exclude_none=True),
             config=self._config.serper_config,
             trace_id=None,  # Client generates a uuid if not provided
             audit_log_fn=None,
@@ -255,10 +356,11 @@ class ResearchAgent:
             # auth, etc.). Log and return empty — the pipeline continues
             # with synthesis of whatever fetch results exist.
             logger.warning(
-                "_web_search: search returned status=%r error=%r query=%r",
+                "_web_search: search returned status=%r error=%r endpoint=%r query=%r",
                 result.get("status"),
                 result.get("error"),
-                query,
+                params.endpoint,
+                params.query,
             )
             return []
 

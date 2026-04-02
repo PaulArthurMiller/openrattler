@@ -6,6 +6,7 @@ Usage:
 Generates a valid Bearer token using the dev secret, connects to the gateway,
 and lets you chat interactively. Type /quit to exit.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,27 +33,31 @@ def _generate_token(secret: str, channel_id: str) -> str:
     import hmac
 
     _SEP = "."
-    payload = json.dumps({"channel_id": channel_id, "iat": int(datetime.now(timezone.utc).timestamp())})
+    payload = json.dumps(
+        {"channel_id": channel_id, "iat": int(datetime.now(timezone.utc).timestamp())}
+    )
     payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
     sig = hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
     return f"{payload_b64}{_SEP}{sig}"
 
 
 def _build_message(content: str) -> str:
-    return json.dumps({
-        "message_id": str(uuid.uuid4()),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "from_agent": _CHANNEL_ID,
-        "to_agent": _AGENT_ID,
-        "session_key": _SESSION_KEY,
-        "type": "request",
-        "trust_level": "main",
-        "trace_id": str(uuid.uuid4()),
-        "operation": "chat",
-        "params": {"content": content},
-        "metadata": {},
-        "requires_approval": False,
-    })
+    return json.dumps(
+        {
+            "message_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "from_agent": _CHANNEL_ID,
+            "to_agent": _AGENT_ID,
+            "session_key": _SESSION_KEY,
+            "type": "request",
+            "trust_level": "main",
+            "trace_id": str(uuid.uuid4()),
+            "operation": "chat",
+            "params": {"content": content},
+            "metadata": {},
+            "requires_approval": False,
+        }
+    )
 
 
 async def main() -> None:

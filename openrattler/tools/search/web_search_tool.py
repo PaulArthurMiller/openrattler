@@ -417,7 +417,9 @@ async def web_search(
     # construction. Our SerperResponse.credits field holds a SerperCredits
     # object parsed from response headers, set separately below.
     try:
-        response = SerperResponse.model_validate({k: v for k, v in raw_dict.items() if k != "credits"})
+        response = SerperResponse.model_validate(
+            {k: v for k, v in raw_dict.items() if k != "credits"}
+        )
         response.endpoint = validated.endpoint
         response.credits = credits
     except Exception as exc:
@@ -608,7 +610,9 @@ async def web_lens(
     # --- Construct model from sanitized dict ---
     # Strip body 'credits' key (int) — same collision as web_search above.
     try:
-        response = SerperResponse.model_validate({k: v for k, v in raw_dict.items() if k != "credits"})
+        response = SerperResponse.model_validate(
+            {k: v for k, v in raw_dict.items() if k != "credits"}
+        )
         response.endpoint = "lens"
         response.credits = credits
         response.submittedImageUrl = validated.imageUrl  # set by system, not payload

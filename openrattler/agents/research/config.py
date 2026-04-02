@@ -11,9 +11,10 @@ SECURITY NOTES
   processes per URL, limiting the injection surface area.
 - ``mcp_servers`` defaults to empty; no MCP server receives traffic unless
   explicitly added via an approved manifest.
-- ``skill_prompt_path`` must point to an existing file at instantiation time.
-  A missing skill prompt raises ``FileNotFoundError`` — silent degradation is
-  not acceptable.
+- ``skill_prompt_path`` must point to an existing SKILL.md at instantiation.
+  Missing file raises ``FileNotFoundError`` — silent degradation is not acceptable.
+- ``search_plan_path`` must point to an existing SEARCH_PLAN.md at instantiation.
+  Same hard-fail policy — a planner without its prompt must not run.
 """
 
 from __future__ import annotations
@@ -62,6 +63,8 @@ class ResearchAgentConfig:
                                 web_search calls.
         skill_prompt_path:      Path to SKILL.md.  Loaded at instantiation;
                                 missing file raises ``FileNotFoundError``.
+        search_plan_path:       Path to SEARCH_PLAN.md.  Loaded at instantiation;
+                                missing file raises ``FileNotFoundError``.
 
     Security notes:
     - ``allowed_content_types`` is the fetch gate.  Do not add ``text/javascript``,
@@ -78,4 +81,5 @@ class ResearchAgentConfig:
     mcp_servers: list[str] = field(default_factory=list)
     request_timeout_seconds: int = 30
     skill_prompt_path: Path = field(default_factory=lambda: Path(__file__).parent / "SKILL.md")
+    search_plan_path: Path = field(default_factory=lambda: Path(__file__).parent / "SEARCH_PLAN.md")
     serper_config: SerperConfig = field(default_factory=SerperConfig)
