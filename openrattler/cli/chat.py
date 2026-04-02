@@ -42,19 +42,24 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from openrattler.agents.creator import AgentCreator
 from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.providers.anthropic_provider import AnthropicProvider
 from openrattler.agents.providers.openai_provider import OpenAIProvider
 from openrattler.agents.runtime import AgentRuntime
 from openrattler.channels.cli_adapter import CLIAdapter
 from openrattler.config.loader import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from openrattler.identity.loader import IdentityLoader, populate_identity_dir
 from openrattler.mcp.bridge import MCPToolBridge
 from openrattler.mcp.manager import MCPManager
-from openrattler.models.agents import AgentConfig, TrustLevel
+from openrattler.models.agents import AgentConfig, AgentSpawnLimits, TrustLevel
 from openrattler.models.sessions import Session
+from openrattler.security.memory_security import MemorySecurityAgent
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.transcripts import TranscriptStore
+from openrattler.tools.builtin.memory_tools import NarrativeMemoryTools
+from openrattler.tools.builtin.research_tools import ResearchTools
 from openrattler.tools.executor import ToolExecutor
 from openrattler.tools.registry import ToolRegistry
 
@@ -204,10 +209,14 @@ class CLIChat:
         sessions_dir = self._workspace_dir / "sessions"
         memory_dir = self._workspace_dir / "memory"
         audit_dir = self._workspace_dir / "audit"
+        identity_dir = self._workspace_dir / "identity"
         audit_path = audit_dir / "audit.jsonl"
 
-        for d in (sessions_dir, memory_dir, audit_dir):
+        for d in (sessions_dir, memory_dir, audit_dir, identity_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+        # Ensure template and runtime identity files exist (idempotent).
+        populate_identity_dir(identity_dir)
 
         transcript_store = TranscriptStore(sessions_dir)
         memory_store = MemoryStore(memory_dir)
@@ -216,6 +225,12 @@ class CLIChat:
 
         config = load_config(self._config_path)
         agent_config = _get_agent_config(config)
+
+        # Resolve trust-level tool defaults into allowed_tools so permission
+        # checks match what the full server would grant Corvus.
+        from openrattler.startup import _resolve_agent_tools
+
+        agent_config = _resolve_agent_tools(agent_config, config.tools)
 
         # --- MCP framework setup -------------------------------------------
         mcp_security = config.mcp.security
@@ -240,6 +255,34 @@ class CLIChat:
         )
         self._mcp_manager = mcp_manager
 
+        # --- Narrative memory tools ----------------------------------------
+        # MemorySecurityAgent is required by NarrativeMemoryTools to review
+        # writes before they touch disk.
+        mem_security_agent = MemorySecurityAgent(
+            ["command_injection", "instruction_override", "exfiltration"],
+            audit_log,
+        )
+        NarrativeMemoryTools(
+            identity_dir=identity_dir,
+            memory_config=config.memory,
+            security_agent=mem_security_agent,
+            audit=audit_log,
+            memory_store=memory_store,
+            on_security_alert=None,  # CLI mode: no channel adapters to dispatch alerts
+        ).register_all(registry)
+
+        # --- AgentCreator + ResearchTools ----------------------------------
+        agent_registry: dict[str, AgentConfig] = {agent_config.agent_id: agent_config}
+        creator = AgentCreator(
+            config=agent_config,
+            spawn_limits=AgentSpawnLimits(),
+            agent_registry=agent_registry,
+            audit_log=audit_log,
+            tool_registry=registry,
+        )
+        ResearchTools(creator=creator, audit=audit_log).register_all(registry)
+
+        # --- Runtime -------------------------------------------------------
         executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
 
         provider = self._injected_provider or _build_provider_from_env()
@@ -251,6 +294,12 @@ class CLIChat:
             transcript_store=transcript_store,
             memory_store=memory_store,
             audit_log=audit_log,
+            identity_loader=IdentityLoader(
+                identity_dir=identity_dir,
+                agent_config=agent_config,
+                tool_registry=registry,
+                config=config,
+            ),
         )
         self._session = await self._runtime.initialize_session(CLI_SESSION_KEY)
         self._audit_log = audit_log

@@ -426,3 +426,51 @@ class IdentityLoader:
             "user confirmation before executing.",
         ]
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Identity directory population helper
+# ---------------------------------------------------------------------------
+
+
+def populate_identity_dir(identity_dir: Path) -> None:
+    """Ensure *identity_dir* contains the expected runtime and template files.
+
+    - Template files (SOUL.md, IDENTITY.md, BOOTSTRAP.md, HEARTBEAT.md) are
+      copied from the package templates directory if they do not yet exist.
+      Existing user-customised copies are never overwritten.
+    - Runtime files (USER.md, MEMORY.md) are created as empty files if absent;
+      never overwritten.
+    - ``.init_date`` is written once on first population with the current UTC
+      date; never overwritten on subsequent starts.
+
+    This function is intentionally idempotent — safe to call on every startup.
+    Called by both ``startup.build_application()`` and ``CLIChat.open()`` so
+    the identity directory is always in a consistent state regardless of which
+    entry point is used.
+
+    Security notes:
+    - USER.md is never populated here; it is always written through the
+      ``update_user_profile`` tool, which runs the security review gate.
+    - Existing files are never overwritten — user customisations survive restarts.
+    """
+    import shutil
+    from datetime import datetime, timezone
+
+    for filename in TEMPLATE_FILES:
+        dest = identity_dir / filename
+        if not dest.exists():
+            src = _TEMPLATES_DIR / filename
+            if src.exists():
+                shutil.copy(src, dest)
+            else:
+                logger.warning("populate_identity_dir: template %s not found at %s", filename, src)
+
+    for filename in RUNTIME_FILES:
+        runtime_path = identity_dir / filename
+        if not runtime_path.exists():
+            runtime_path.write_text("", encoding="utf-8")
+
+    init_date_path = identity_dir / _INIT_DATE_FILE
+    if not init_date_path.exists():
+        init_date_path.write_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"), encoding="utf-8")
