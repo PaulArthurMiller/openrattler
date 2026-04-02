@@ -40,6 +40,10 @@ fixed during live test: (1) `SerperResponse.credits` field collision with body i
 stripped before `model_validate`; (2) hardcoded `endpoint="search"` returned YouTube
 videos — changed to `"news"` (temporary, superseded by 38.4 planning step); (3) 100KB
 fetch limit too small for most news pages — raised to 300KB.
+## Build Piece 38.3 — Real LLM Synthesis in ResearchAgent (planned)
+
+**Status:** Planned — see `.claude/BUILD_PIECE_38_3.md`
+**Branch:** `build/38.3-research-synthesis` (to be created)
 
 Replaces `ResearchAgent._synthesize()` stub with a real async LLM call via
 an injected `LLMProvider`. Operational in both `openrattler run` (full channel
