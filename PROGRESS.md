@@ -19,6 +19,88 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Build Piece 38.2 — Serper Search API Integration (2026-04-02) ✅
+
+**Status:** Complete — PR open for review
+**Branch:** `build/38.2-serper-search`
+
+### What Was Built
+
+Wire the ResearchAgent's `_web_search` stub to the Serper Google Search API,
+with a full security pipeline (Window 1 sanitizer) and credit tracking.
+
+1. **`openrattler/tools/search/serper_config.py`** (new) — `SerperConfig` dataclass
+   with endpoint allowlist enforcement, `get_api_key()` (env-only), and
+   `DEFAULT_ENABLED_ENDPOINTS` (search, news, images). `from_app_config()` bridges
+   the Pydantic `SerperConfigSection` in `loader.py` to the dataclass.
+
+2. **`openrattler/tools/search/serper_models.py`** (new) — Pydantic v2 models for
+   all Serper endpoints (organic, images, news, videos, places, maps, shopping,
+   scholar, patents, autocomplete, lens). All domain fields system-derived via
+   `@model_validator`. `SerperCredits` carries header-parsed credit tracking data.
+
+3. **`openrattler/tools/search/serper_sanitizer.py`** (new) — Window 1 sanitizer.
+   Scans all text fields in raw Serper JSON before any model construction or LLM
+   exposure. `_extract_text_values()` traverses `[]` and `.*` field path patterns.
+   Entire response rejected (not trimmed) on any flag. Audit event always written.
+
+4. **`openrattler/tools/search/serper_client.py`** (new) — Async aiohttp HTTP client.
+   Enforces: endpoint allowlist before network call, timeout, response size cap,
+   retry logic (5xx only), credit header parsing, Window 1 sanitization. API key
+   read fresh from env at call time; never stored or logged.
+
+5. **`openrattler/tools/search/web_search_tool.py`** (new) — `web_search()` and
+   `web_lens()` entry points. `WebSearchParams` and `WebLensParams` validate tool
+   call parameters. `_map_response_to_tool_result()` maps sanitized `SerperResponse`
+   to the pipeline's structured dict format. Never raises — all errors are returned
+   as structured error dicts.
+
+6. **`openrattler/tools/search/__init__.py`** (new) — Package exports.
+
+7. **`openrattler/config/loader.py`** (modified) — Added `SerperConfigSection` and
+   `SearchConfig` Pydantic models. Added `search: SearchConfig` to `AppConfig`.
+
+8. **`openrattler/agents/research/config.py`** (modified) — Added
+   `serper_config: SerperConfig` field (default `SerperConfig()`) so each spawned
+   ResearchAgent carries its own search config.
+
+9. **`openrattler/agents/research/agent.py`** (modified) — Replaced `_web_search`
+   stub with real delegation to `web_search(params, config, ...)`. Non-ok status
+   is logged and returns empty list (pipeline continues). Results mapped to
+   `{url, title, source_type}` format for `_web_fetch`.
+
+### Test Results
+
+- **1,751 passed, 1 skipped** (78 new + 1,673 prior)
+- `black --check .` — 175 files unchanged ✅
+- `mypy openrattler/` — no issues in 90 source files ✅
+
+### Design Decisions
+
+- **Window 1 sanitizer rejects entire response, not per-field**: A partial result
+  set with one injection-bearing field removed could still mislead the LLM about
+  what was and wasn't found. Rejection is the only safe option.
+- **`scan_for_suspicious_content` API adaptation**: The existing function returns
+  `list[tuple[str, str]]` (not a dict). Sanitizer uses `matches[0][0]` for the
+  pattern name in audit records; raw text is never stored.
+- **`serper_config` in `ResearchAgentConfig`**: Config dataclass holds its own
+  `SerperConfig` with defaults. `AgentCreator.create_research_agent` passes it
+  through without modification — wiring from `AppConfig.search` is future work.
+- **`web_lens` calls `_execute_request` directly**: Lens has a different payload
+  shape (`imageUrl` instead of `q`). The allowlist check runs before the call.
+- **`aiohttp` already present**: No new dependencies added.
+
+### Known Limitations (next build)
+
+- `ResearchAgent._synthesize()` is still a stub — real LLM synthesis via
+  `AgentRuntime` is a future piece.
+- `AppConfig.search.serper` config values are not yet propagated to
+  `ResearchAgentConfig.serper_config` at startup — future wiring needed.
+- Serper credit state is not yet persisted to `memory.json` — backlog item
+  documented in `BUILD_PIECE_38_2.md`.
+
+---
+
 ## Build Piece 38.1 — ResearchAgent Tool Wiring and Runtime Integration (2026-04-01) ✅
 
 **Status:** Complete — PR open for review
