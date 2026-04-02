@@ -19,10 +19,27 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
-## Build Piece 38.3 — Real LLM Synthesis in ResearchAgent (planned)
+## Build Piece 38.4 — ResearchAgent Search Planning Step (planned)
 
-**Status:** Planned — see `.claude/BUILD_PIECE_38_3.md`
-**Branch:** `build/38.3-research-synthesis` (to be created)
+**Status:** Planned — see `.claude/BUILD_PIECE_38_4.md`
+**Branch:** `build/38.4-research-search-planning` (to be created)
+
+Adds a lightweight LLM planning step (`_plan_search`) before the Serper search call.
+The ResearchAgent reads the query and enabled endpoint list, constructs a full
+`WebSearchParams` (endpoint, tbs, location, gl, hl, etc.) via `provider.complete()`,
+and passes that to `_web_search()`. A new dedicated prompt file (`SEARCH_PLAN.md`)
+drives the planning call — kept separate from `SKILL.md` (synthesis) so each LLM
+call receives only the instructions relevant to its task.
+
+---
+
+## Build Piece 38.3 — Real LLM Synthesis in ResearchAgent (2026-04-02) ✅
+
+**Status:** Complete — built on branch, live tested 2026-04-02. Three bugs found and
+fixed during live test: (1) `SerperResponse.credits` field collision with body int —
+stripped before `model_validate`; (2) hardcoded `endpoint="search"` returned YouTube
+videos — changed to `"news"` (temporary, superseded by 38.4 planning step); (3) 100KB
+fetch limit too small for most news pages — raised to 300KB.
 
 Replaces `ResearchAgent._synthesize()` stub with a real async LLM call via
 an injected `LLMProvider`. Operational in both `openrattler run` (full channel

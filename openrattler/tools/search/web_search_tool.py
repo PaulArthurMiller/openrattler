@@ -413,15 +413,19 @@ async def web_search(
         }
 
     # --- Construct Pydantic model from sanitized raw dict ---
+    # Strip the body 'credits' key (an int — credits consumed) before model
+    # construction. Our SerperResponse.credits field holds a SerperCredits
+    # object parsed from response headers, set separately below.
     try:
-        response = SerperResponse.model_validate(raw_dict)
+        response = SerperResponse.model_validate({k: v for k, v in raw_dict.items() if k != "credits"})
         response.endpoint = validated.endpoint
         response.credits = credits
     except Exception as exc:
         logger.error(
-            "web_search: model construction failed after sanitization " "trace_id=%s type=%s",
+            "web_search: model construction failed after sanitization trace_id=%s type=%s msg=%s",
             trace_id,
             type(exc).__name__,
+            exc,
         )
         return {
             "status": "error",
@@ -602,16 +606,18 @@ async def web_lens(
         }
 
     # --- Construct model from sanitized dict ---
+    # Strip body 'credits' key (int) — same collision as web_search above.
     try:
-        response = SerperResponse.model_validate(raw_dict)
+        response = SerperResponse.model_validate({k: v for k, v in raw_dict.items() if k != "credits"})
         response.endpoint = "lens"
         response.credits = credits
         response.submittedImageUrl = validated.imageUrl  # set by system, not payload
     except Exception as exc:
         logger.error(
-            "web_lens: model construction failed trace_id=%s type=%s",
+            "web_lens: model construction failed trace_id=%s type=%s msg=%s",
             trace_id,
             type(exc).__name__,
+            exc,
         )
         return {
             "status": "error",

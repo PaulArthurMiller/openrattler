@@ -244,7 +244,7 @@ class ResearchAgent:
         from openrattler.tools.search.web_search_tool import web_search
 
         result = await web_search(
-            params={"query": query, "endpoint": "search"},
+            params={"query": query, "endpoint": "news"},
             config=self._config.serper_config,
             trace_id=None,  # Client generates a uuid if not provided
             audit_log_fn=None,

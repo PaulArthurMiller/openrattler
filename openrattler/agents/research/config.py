@@ -71,7 +71,7 @@ class ResearchAgentConfig:
     """
 
     model: str = "anthropic/claude-haiku-4-5-20251001"
-    max_fetch_size_bytes: int = 100_000
+    max_fetch_size_bytes: int = 300_000
     allowed_content_types: list[str] = field(
         default_factory=lambda: ["text/html", "text/plain", "application/json"]
     )
