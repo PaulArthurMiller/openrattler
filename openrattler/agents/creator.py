@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
 
+from openrattler.agents.providers.base import LLMProvider
 from openrattler.agents.creator_validator import (
     AUTHORIZED_SPAWNERS,
     CreatorSecurityValidator,
@@ -136,6 +137,7 @@ class AgentCreator:
         agent_registry: dict[str, AgentConfig],
         audit_log: AuditLog,
         tool_registry: ToolRegistry,
+        provider: Optional[LLMProvider] = None,
     ) -> None:
         self._config = config
         self._spawn_limits = spawn_limits
@@ -145,6 +147,9 @@ class AgentCreator:
         self._validator = CreatorSecurityValidator(spawn_limits, agent_registry)
         # Maps agent_id → running asyncio.Task (the timeout watchdog)
         self._timeout_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        # LLM provider forwarded to ResearchAgent for real synthesis.  None means
+        # synthesis falls back to the stub — preserves backward compat in tests.
+        self._provider = provider
 
     # ------------------------------------------------------------------
     # Public API
@@ -416,7 +421,7 @@ class AgentCreator:
         # 7. Instantiate and return (import here to avoid top-level circular deps)
         from openrattler.agents.research.agent import ResearchAgent
 
-        return ResearchAgent(config=config, audit=audit)
+        return ResearchAgent(config=config, audit=audit, provider=self._provider)
 
     # ------------------------------------------------------------------
     # Private helpers

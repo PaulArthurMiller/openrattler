@@ -708,6 +708,7 @@ async def build_application(
         agent_registry=agent_registry,
         audit_log=audit,
         tool_registry=registry,
+        provider=llm_provider,  # Forwarded to ResearchAgent for real LLM synthesis
     )
     ResearchTools(creator=creator, audit=audit).register_all(registry)
 

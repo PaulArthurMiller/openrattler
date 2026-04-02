@@ -272,6 +272,10 @@ class CLIChat:
         ).register_all(registry)
 
         # --- AgentCreator + ResearchTools ----------------------------------
+        # Provider is built first so it can be forwarded to AgentCreator for
+        # real LLM synthesis inside ResearchAgent.
+        provider = self._injected_provider or _build_provider_from_env()
+
         agent_registry: dict[str, AgentConfig] = {agent_config.agent_id: agent_config}
         creator = AgentCreator(
             config=agent_config,
@@ -279,13 +283,12 @@ class CLIChat:
             agent_registry=agent_registry,
             audit_log=audit_log,
             tool_registry=registry,
+            provider=provider,  # Forwarded to ResearchAgent for real LLM synthesis
         )
         ResearchTools(creator=creator, audit=audit_log).register_all(registry)
 
         # --- Runtime -------------------------------------------------------
         executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
-
-        provider = self._injected_provider or _build_provider_from_env()
 
         self._runtime = AgentRuntime(
             config=agent_config,

@@ -19,6 +19,29 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Build Piece 38.3 — Real LLM Synthesis in ResearchAgent (planned)
+
+**Status:** Planned — see `.claude/BUILD_PIECE_38_3.md`
+**Branch:** `build/38.3-research-synthesis` (to be created)
+
+Replaces `ResearchAgent._synthesize()` stub with a real async LLM call via
+an injected `LLMProvider`. Operational in both `openrattler run` (full channel
+server: SMS, Slack, email, WebSocket) and `openrattler chat` (CLI mode).
+
+Key changes:
+- `ResearchAgent.__init__` gains `provider: Optional[LLMProvider] = None`
+- `_synthesize` becomes `async`, builds a system+user prompt from SKILL.md and
+  fetched content, calls `provider.complete()` (no tools, max_tokens=1024)
+- `AgentCreator.__init__` gains `provider: Optional[LLMProvider] = None`, forwarded
+  to `ResearchAgent` at spawn time
+- `startup.py`: add `provider=llm_provider` to `AgentCreator(...)` — covers full run
+- `cli/chat.py`: reorder so `provider` is built before `AgentCreator`, then pass it in
+
+Provider=None falls back to stub (backward compat); provider exceptions fall back
+gracefully — pipeline never crashes.
+
+---
+
 ## Build Piece 38.2 — Serper Search API Integration (2026-04-02) ✅
 
 **Status:** Complete — PR open for review
