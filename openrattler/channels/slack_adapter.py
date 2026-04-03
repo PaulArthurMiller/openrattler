@@ -44,7 +44,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import aiohttp
 from aiohttp import ClientTimeout
@@ -53,9 +53,13 @@ from openrattler.channels.base import ChannelAdapter
 from openrattler.config.loader import ChannelConfig
 from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage, create_message
+from openrattler.security.action_levels import ACTION_LEVEL_DESCRIPTIONS
 from openrattler.security.patterns import scan_for_suspicious_content
 from openrattler.security.rate_limiter import RateLimiter
 from openrattler.storage.audit import AuditLog
+
+if TYPE_CHECKING:
+    from openrattler.security.approval import ApprovalManager, ApprovalRequest
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -482,3 +486,161 @@ class SlackAdapter(ChannelAdapter):
                 details=details or {},
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# SlackApprovalHandler
+# ---------------------------------------------------------------------------
+
+
+class SlackApprovalHandler:
+    """ApprovalHandler that posts approval requests to Slack and polls for a reply.
+
+    Posts a formatted two-block message to the configured Slack channel (action
+    block first, rationale block second), then polls the channel for a reply
+    containing "approve" or "deny" from an allowlisted sender.  Stops polling
+    when the request's ``timeout_seconds`` is reached; the ``ApprovalManager``'s
+    own timeout mechanism handles the final denial.
+
+    Conforms to the ``ApprovalHandler`` callable protocol:
+    ``async (request: ApprovalRequest, manager: ApprovalManager) -> None``.
+
+    Args:
+        bot_token:        Slack bot token (Bearer auth).
+        channel_id:       Slack channel ID to post the approval request to.
+        sender_allowlist: Set of Slack user IDs (``U...``) allowed to approve/deny.
+        poll_interval_seconds: Seconds between polls for a reply (default 3).
+
+    Security notes:
+    - Only replies from allowlisted senders are accepted; others are silently skipped.
+    - Handler respects ``request.timeout_seconds`` — stops polling before that deadline.
+    - ``bot_token`` is never logged, audited, or included in any exception.
+    - If posting the message fails, the handler returns silently; the
+      ``ApprovalManager`` timeout will deny the request automatically.
+    - Slack always returns HTTP 200; the ``"ok"`` field is the success indicator.
+    """
+
+    def __init__(
+        self,
+        bot_token: str,
+        channel_id: str,
+        sender_allowlist: set[str],
+        poll_interval_seconds: int = 3,
+    ) -> None:
+        self._bot_token = bot_token
+        self._channel_id = channel_id
+        self._sender_allowlist = sender_allowlist
+        self._poll_interval = poll_interval_seconds
+
+    async def __call__(self, request: "ApprovalRequest", manager: "ApprovalManager") -> None:
+        """Post the approval request to Slack and poll for an approve/deny reply.
+
+        Posts the formatted message, records the message timestamp, then polls
+        ``conversations.history`` for a reply from an allowlisted sender.
+        Calls ``manager.resolve()`` when a decision is received.
+        """
+        message_text = self._format_message(request)
+
+        async with aiohttp.ClientSession(
+            headers={"Authorization": f"Bearer {self._bot_token}"},
+            timeout=ClientTimeout(total=_REQUEST_TIMEOUT),
+        ) as session:
+            post_ts = await self._post_message(session, message_text)
+            if post_ts is None:
+                # Could not post — let ApprovalManager timeout handle it.
+                return
+
+            deadline = asyncio.get_event_loop().time() + request.timeout_seconds
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(self._poll_interval)
+                decision = await self._check_for_reply(session, post_ts)
+                if decision is not None:
+                    approved, decided_by = decision
+                    try:
+                        await manager.resolve(request.approval_id, approved, decided_by)
+                    except ValueError:
+                        # Request already decided (timeout race) — no-op.
+                        pass
+                    return
+
+    def _format_message(self, request: "ApprovalRequest") -> str:
+        """Format the approval request as a two-block Slack message string.
+
+        Action block is rendered first; rationale block follows after a divider
+        so the user reads *what* before the agent's *why*.
+        """
+        wide = "=" * 48
+        thin = "-" * 48
+        level_label = ACTION_LEVEL_DESCRIPTIONS.get(request.action_level, "Unknown")
+        rationale_text = (
+            request.rationale if request.rationale is not None else "(no rationale provided)"
+        )
+        lines = [
+            wide,
+            "[APPROVAL REQUIRED]",
+            f"  Action  : {request.operation}",
+            f"  Level   : {request.action_level} — {level_label}",
+            f"  Agent   : {request.requesting_agent}",
+            f"  Session : {request.session_key}",
+            f"  Timeout : {request.timeout_seconds}s",
+            thin,
+            "  Reason (agent's stated rationale):",
+            f"  {rationale_text!r}",
+            wide,
+            "Reply with 'approve' or 'deny' to respond.",
+        ]
+        return "\n".join(lines)
+
+    async def _post_message(self, session: aiohttp.ClientSession, text: str) -> Optional[str]:
+        """Post a message to the Slack channel.
+
+        Returns:
+            The message's Slack timestamp (``ts``) on success, or ``None``
+            if the post failed.
+        """
+        url = f"{_SLACK_API_BASE}/chat.postMessage"
+        payload = {"channel": self._channel_id, "text": text}
+        try:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json()
+            if data.get("ok"):
+                return str(data.get("ts", ""))
+        except Exception:
+            pass
+        return None
+
+    async def _check_for_reply(
+        self, session: aiohttp.ClientSession, after_ts: str
+    ) -> Optional[tuple[bool, str]]:
+        """Poll Slack for an approve/deny reply after *after_ts*.
+
+        Scans all messages newer than *after_ts* in the channel.  Only messages
+        from ``sender_allowlist`` are considered.
+
+        Returns:
+            ``(approved, decided_by)`` tuple if a valid decision is found.
+            ``None`` if no decision has been received yet.
+        """
+        url = f"{_SLACK_API_BASE}/conversations.history"
+        params: dict[str, Any] = {
+            "channel": self._channel_id,
+            "oldest": after_ts,
+            "limit": 20,
+        }
+        try:
+            async with session.get(url, params=params) as resp:
+                data = await resp.json()
+            if not data.get("ok"):
+                return None
+            for msg in data.get("messages", []):
+                sender_id = str(msg.get("user", ""))
+                if sender_id not in self._sender_allowlist:
+                    continue
+                text = str(msg.get("text", "")).lower()
+                if "approve" in text:
+                    return (True, f"slack:{sender_id}")
+                if "deny" in text:
+                    return (False, f"slack:{sender_id}")
+        except Exception:
+            pass
+        return None
