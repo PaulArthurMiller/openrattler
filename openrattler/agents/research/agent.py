@@ -633,9 +633,7 @@ class ResearchAgent:
             }
             for h in hits
         ]
-        logger.info(
-            "_build_url_discovery_result: %d URLs for query=%r", len(hits), request.query
-        )
+        logger.info("_build_url_discovery_result: %d URLs for query=%r", len(hits), request.query)
         sanitized = await self._sanitizer.sanitize(
             raw_summary=raw_summary,
             raw_citations=raw_citations,

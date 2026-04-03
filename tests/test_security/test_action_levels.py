@@ -305,7 +305,9 @@ class TestApprovalThresholdPolicyRequiresApproval:
         for level in range(1, 4):
             assert policy.requires_approval(level) is True, f"level {level} should require approval"
         for level in range(4, 6):
-            assert policy.requires_approval(level) is False, f"level {level} should not require approval"
+            assert (
+                policy.requires_approval(level) is False
+            ), f"level {level} should not require approval"
 
 
 class TestApprovalThresholdPolicyFromSecurityConfig:

@@ -629,7 +629,69 @@ async def build_application(
         security_config=mcp_security,
         audit=audit,
     )
-    executor = ToolExecutor(registry, audit, mcp_bridge=mcp_bridge)
+
+    # 9a. ApprovalManager + ApprovalThresholdPolicy + ApprovalHandlerRouter.
+    #
+    # The policy translates the security profile into a numeric threshold:
+    #   paranoid → all tools require approval
+    #   standard → levels 1–3 require approval (external writes / modifying local state)
+    #   minimal  → only level-1 actions (permanent/irreversible) require approval
+    #
+    # The router dispatches to the highest-fidelity available channel:
+    # Slack > Email > CLI fallback.  The CLI fallback is always available
+    # so approval requests are never silently dropped.
+    from openrattler.security.action_levels import ApprovalThresholdPolicy
+    from openrattler.security.approval import (
+        ApprovalHandler,
+        ApprovalHandlerRouter,
+        ApprovalManager,
+    )
+
+    approval_manager = ApprovalManager(audit)
+    policy = ApprovalThresholdPolicy.from_security_config(config.security)
+
+    approval_handlers: dict[str, ApprovalHandler] = {}
+    preferred_channel = "cli"
+
+    slack_cfg = config.channels.get("slack")
+    if slack_cfg and slack_cfg.enabled and slack_cfg.settings:
+        s = slack_cfg.settings
+        if s.get("bot_token") and s.get("channel_id"):
+            from openrattler.channels.slack_adapter import SlackApprovalHandler
+
+            approval_handlers["slack"] = SlackApprovalHandler(
+                bot_token=s["bot_token"],
+                channel_id=s["channel_id"],
+                sender_allowlist=set(s.get("sender_allowlist", [])),
+            )
+            preferred_channel = "slack"
+
+    email_cfg = config.channels.get("email")
+    if email_cfg and email_cfg.enabled and email_cfg.settings:
+        e = email_cfg.settings
+        if e.get("imap_host") and e.get("smtp_host") and e.get("username") and e.get("password"):
+            from openrattler.channels.email_adapter import EmailApprovalHandler
+
+            approval_handlers["email"] = EmailApprovalHandler(
+                imap_host=e["imap_host"],
+                smtp_host=e["smtp_host"],
+                username=e["username"],
+                password=e["password"],
+                sender_allowlist=set(e.get("sender_allowlist", [])),
+                default_to_address=e.get("default_to_address", e["username"]),
+            )
+            if preferred_channel == "cli":
+                preferred_channel = "email"
+
+    router = ApprovalHandlerRouter(
+        preferred_channel=preferred_channel,
+        handlers=approval_handlers,
+    )
+    approval_manager.set_handler(router)
+
+    executor = ToolExecutor(
+        registry, audit, approval_manager=approval_manager, policy=policy, mcp_bridge=mcp_bridge
+    )
 
     # 10. SocialTools.
     SocialTools(social_store, audit).register_all(registry)

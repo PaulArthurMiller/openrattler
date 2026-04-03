@@ -63,6 +63,11 @@ class ToolCall(BaseModel):
     - ``arguments`` come directly from the LLM and must be validated against
       the tool's parameter schema before use.
     - ``call_id`` is used to correlate calls with results in multi-tool turns.
+    - ``trace_id`` is propagated from the originating ``UniversalMessage`` so
+      approval audit events can be correlated end-to-end.
+    - ``rationale`` is the agent's stated reason for the call; it is
+      agent-supplied and must be displayed AFTER the action block in approval
+      UIs (never before — see ApprovalRequest.rationale security note).
     """
 
     tool_name: str = Field(description="Name of the tool to invoke")
@@ -71,6 +76,20 @@ class ToolCall(BaseModel):
         description="Arguments to pass to the tool handler",
     )
     call_id: str = Field(description="Unique identifier for this call within a turn")
+    trace_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Trace ID propagated from the originating UniversalMessage. "
+            "Used for end-to-end audit correlation across approval events."
+        ),
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description=(
+            "Agent's stated reason for this tool call. Agent-supplied; "
+            "must be displayed AFTER the action block in approval UIs."
+        ),
+    )
 
 
 class ToolResult(BaseModel):
