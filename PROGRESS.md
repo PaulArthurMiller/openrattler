@@ -19,6 +19,27 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## Future Upgrade — ResearchAgent Multi-Search Retry
+
+**Status:** Noted 2026-04-03 during /smoketest of build 38.4.
+
+When the initial search returns fewer than the requested number of *usable*
+results (i.e. sources that were successfully fetched and contain real content),
+the ResearchAgent should retry with a different search — up to a maximum of 3
+total searches per request. The minimum usable result count (`min_results`)
+should be part of the ResearchRequest passed from Corvus.
+
+Design notes:
+- `ResearchRequest` gains an optional `min_results: int = 1` field
+- After each search + fetch cycle, count successfully fetched pages
+- If count < `min_results` and retries_remaining > 0: re-plan and re-search
+  (the planner should vary the query or endpoint on retries)
+- Cap at 3 total searches to bound Serper credit usage
+- Valid fetched pages accumulate across retries; synthesis runs once at the end
+  on the full collected set
+
+---
+
 ## Build Piece 38.4 — ResearchAgent Search Planning Step (planned)
 
 **Status:** Planned — see `.claude/BUILD_PIECE_38_4.md`

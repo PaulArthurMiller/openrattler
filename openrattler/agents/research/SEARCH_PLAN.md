@@ -17,9 +17,11 @@ the enabled list.
 
 Endpoint reference — when each type is appropriate:
 
-- **search** — general web search; use for factual background, "how does X work",
-  company or product information, reference material, anything that is not primarily
-  news or specialized content
+- **search** — URL discovery only; returns a list of source URLs, no page content
+  is fetched or synthesized. Use when the goal is to find relevant sources for a
+  topic — not to retrieve and read their content. Appropriate for "find sources on X",
+  "what sites cover Y", or when the calling agent wants URLs to decide what to read
+  next. Do NOT use for queries where the answer requires reading page content.
 - **news** — Google News index; use for current events, breaking news, protests,
   political developments, announcements, anything that happened recently or where
   recency is the core of the query

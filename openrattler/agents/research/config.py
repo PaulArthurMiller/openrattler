@@ -69,12 +69,12 @@ class ResearchAgentConfig:
     Security notes:
     - ``allowed_content_types`` is the fetch gate.  Do not add ``text/javascript``,
       ``application/x-www-form-urlencoded``, or binary types.
-    - ``max_fetch_size_bytes`` at 100 KB is intentionally conservative.  Increase
+    - ``max_fetch_size_bytes`` at 300 KB is intentionally conservative.  Increase
       only with documented justification — larger values expand the injection surface.
     """
 
     model: str = "anthropic/claude-haiku-4-5-20251001"
-    max_fetch_size_bytes: int = 2_000_000  # raised from 300KB for testing (YouTube pages ~1.2MB actual)
+    max_fetch_size_bytes: int = 300_000
     allowed_content_types: list[str] = field(
         default_factory=lambda: ["text/html", "text/plain", "application/json"]
     )
