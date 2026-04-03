@@ -19,6 +19,26 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## TODO — Inject Current Date/Time into Corvus
+
+**Status:** Noted 2026-04-03 during /smoketest of build 38.4.
+
+LLMs default to assuming the current date is near their training cutoff when
+no date is provided. The ResearchAgent's search planner and synthesis LLM now
+receive the current UTC datetime in every prompt (added 2026-04-03). Corvus
+itself does not yet receive it.
+
+Add current date/time to Corvus at two points:
+1. **Startup system prompt** — inject `Current date: {datetime}` into Corvus's
+   system prompt so it has temporal grounding from the first message.
+2. **Heartbeat** — include the current datetime in each heartbeat trigger so
+   Corvus always has a fresh timestamp even in long-running sessions.
+
+This is especially important for time-sensitive queries, date calculations,
+and any task where Corvus needs to reason about "now" vs. "then".
+
+---
+
 ## Future Upgrade — ResearchAgent Multi-Search Retry
 
 **Status:** Noted 2026-04-03 during /smoketest of build 38.4.

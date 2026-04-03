@@ -298,7 +298,9 @@ class ResearchAgent:
             return default
 
         enabled = sorted(self._config.serper_config.enabled_endpoints)
+        current_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         user_content = (
+            f"Current date and time: {current_dt}\n\n"
             f"Research query: {request.query}\n\n"
             f"Enabled search endpoints: {', '.join(enabled)}\n\n"
             "Construct the search parameters as a JSON object."
@@ -541,7 +543,11 @@ class ResearchAgent:
         System message: the full SKILL.md content loaded at instantiation.
         User message:   the query plus formatted snippets from each fetched page.
         """
-        user_parts: list[str] = [f"Research query: {request.query}\n"]
+        current_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        user_parts: list[str] = [
+            f"Current date and time: {current_dt}\n",
+            f"Research query: {request.query}\n",
+        ]
 
         if fetched:
             user_parts.append("Fetched sources:\n")
