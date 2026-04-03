@@ -19,6 +19,22 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-03 — Piece 39.3 Complete ✅
+
+**Branch:** `milestone-39.3-threshold-policy` | **PR:** open
+
+Built the threshold policy and config integration for the Universal Action Approval Framework:
+
+- **`openrattler/security/action_levels.py`** — `ApprovalThresholdPolicy` class: `threshold: int`, `requires_approval(level) -> bool`, `from_security_config(config)` classmethod; profile → threshold mapping (`paranoid=5`, `standard=3`, `minimal=1`); explicit `approval_threshold` override takes priority
+- **`openrattler/config/loader.py`** — `approval_threshold: Optional[int]` added to `SecurityConfig` with `field_validator` enforcing range 1–5 (errors on 0 or 6, no silent clamping)
+- **`openrattler/tools/permissions.py`** — `needs_approval(tool_def, policy=None)` updated: when policy provided, uses `policy.requires_approval(tool_def.action_level)`; when policy is None, falls back to legacy `tool_def.requires_approval` (backward-compat until 39.5 wires the executor)
+- **28 new tests** in `tests/test_security/test_action_levels.py` (39 total in that file)
+- 1845 tests passing, mypy clean, black clean
+
+**Deviation from plan:** `needs_approval` policy parameter is `Optional` (not required) to keep `executor.py` and existing permission tests working until 39.5 wires the policy into the executor. The old `requires_approval` bool flag remains the fallback.
+
+---
+
 ## /build 2026-04-03 — Piece 39.2 Complete ✅
 
 **Branch:** `milestone-39.2-approval-token-system` | **PR:** open
@@ -44,7 +60,7 @@ Built the action level foundation for the Universal Action Approval Framework:
 - **11 new tests** in `tests/test_security/test_action_levels.py`
 - 1794 tests passing, mypy clean, black clean
 
-**Current milestone:** 39.3 — Threshold Policy + Config Integration (not started)
+**Current milestone:** 39.4 — Handler Upgrades + Multi-Channel Routing (not started)
 
 ---
 

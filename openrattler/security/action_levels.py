@@ -1,4 +1,4 @@
-"""Action severity levels and dead-stop registry.
+"""Action severity levels, dead-stop registry, and approval threshold policy.
 
 Action levels are integer constants (1–5) assigned to every registered tool.
 They express how dangerous or consequential an action is:
@@ -28,9 +28,30 @@ DeadStopError
 -------------
 Raised when a dead-stop action is attempted.  Carries the action name so the
 caller can audit-log which action was blocked before surfacing the error.
+
+ApprovalThresholdPolicy
+-----------------------
+The policy object that decides whether a given action level requires approval.
+A tool at level N requires approval if ``N <= policy.threshold``.
+
+Profile → default threshold mapping:
+    paranoid → 5  (all tools require approval, including read-only)
+    standard → 3  (level 1–3 require approval; level 4–5 are auto-approved)
+    minimal  → 1  (only permanent/irreversible actions require approval)
+
+The threshold can be overridden by ``SecurityConfig.approval_threshold``; an
+explicit threshold always takes precedence over the profile default.
+
+Use ``ApprovalThresholdPolicy.from_security_config()`` to build the policy at
+startup from the loaded ``AppConfig``.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openrattler.config.loader import SecurityConfig
 
 # ---------------------------------------------------------------------------
 # Level descriptions
@@ -85,3 +106,89 @@ class DeadStopError(Exception):
             f"It is hardcoded in DEAD_STOP_ACTIONS and cannot be overridden by "
             f"any configuration or approval."
         )
+
+
+# ---------------------------------------------------------------------------
+# ApprovalThresholdPolicy
+# ---------------------------------------------------------------------------
+
+#: Default approval threshold for each security profile.
+#: Tools with action_level <= threshold require human approval.
+#:
+#: - paranoid → 5: all tools require approval (even read-only)
+#: - standard → 3: level 1–3 require approval (permanent, external, local writes)
+#: - minimal  → 1: only level-1 actions require approval (permanent/irreversible)
+_PROFILE_THRESHOLDS: dict[str, int] = {
+    "paranoid": 5,
+    "standard": 3,
+    "minimal": 1,
+}
+
+
+class ApprovalThresholdPolicy:
+    """Decides whether a given action level requires human approval.
+
+    A tool at level N requires approval if ``N <= self.threshold``.  The
+    threshold is resolved from the security profile at startup; it can be
+    overridden by ``SecurityConfig.approval_threshold`` in the user's config.
+
+    Args:
+        threshold: The resolved threshold.  Tools with ``action_level <= threshold``
+                   will trigger the approval gate.
+
+    Security notes:
+    - A higher threshold means *more* tools require approval (paranoid = 5).
+    - A lower threshold means *fewer* tools require approval (minimal = 1).
+    - The threshold is a policy dial — it does not replace the dead-stop check,
+      which runs unconditionally before the threshold is consulted.
+
+    Example::
+
+        policy = ApprovalThresholdPolicy(threshold=3)
+        policy.requires_approval(1)  # True  — permanent/irreversible
+        policy.requires_approval(3)  # True  — at threshold
+        policy.requires_approval(4)  # False — above threshold
+        policy.requires_approval(5)  # False — read-only, safest
+    """
+
+    def __init__(self, threshold: int) -> None:
+        if not (1 <= threshold <= 5):
+            raise ValueError(
+                f"ApprovalThresholdPolicy threshold must be between 1 and 5 (got {threshold})"
+            )
+        self.threshold = threshold
+
+    def requires_approval(self, level: int) -> bool:
+        """Return ``True`` if a tool at *level* must pass through the approval gate.
+
+        Args:
+            level: The tool's ``action_level`` (1=most dangerous, 5=safest).
+
+        Returns:
+            ``True`` when ``level <= self.threshold``; ``False`` otherwise.
+        """
+        return level <= self.threshold
+
+    @classmethod
+    def from_security_config(cls, config: "SecurityConfig") -> "ApprovalThresholdPolicy":
+        """Build a policy from a ``SecurityConfig``.
+
+        Resolution order:
+        1. If ``config.approval_threshold`` is set (not None), use it directly.
+        2. Otherwise look up the profile's default from ``_PROFILE_THRESHOLDS``.
+        3. If the profile is unrecognised, fall back to ``standard`` (threshold 3).
+
+        Args:
+            config: The ``SecurityConfig`` section of the loaded ``AppConfig``.
+
+        Returns:
+            A new ``ApprovalThresholdPolicy`` with the resolved threshold.
+        """
+        # Explicit override takes priority.
+        if config.approval_threshold is not None:
+            return cls(threshold=config.approval_threshold)
+
+        # Derive from the profile name; fall back to standard if unknown.
+        profile = config.profile
+        threshold = _PROFILE_THRESHOLDS.get(profile, _PROFILE_THRESHOLDS["standard"])
+        return cls(threshold=threshold)
