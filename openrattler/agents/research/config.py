@@ -74,7 +74,7 @@ class ResearchAgentConfig:
     """
 
     model: str = "anthropic/claude-haiku-4-5-20251001"
-    max_fetch_size_bytes: int = 1_000_000  # raised from 300KB for testing (YouTube pages ~400-600KB)
+    max_fetch_size_bytes: int = 2_000_000  # raised from 300KB for testing (YouTube pages ~1.2MB actual)
     allowed_content_types: list[str] = field(
         default_factory=lambda: ["text/html", "text/plain", "application/json"]
     )
