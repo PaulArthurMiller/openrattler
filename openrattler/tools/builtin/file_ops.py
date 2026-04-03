@@ -102,6 +102,7 @@ def _validate_path(raw: str) -> Path:
 
 @tool(
     trust_level_required=TrustLevel.main,
+    action_level=5,
     security_notes=(
         "Path traversal mitigation: '..' is rejected before resolution; "
         "resolved path must be within a configured allowed directory. "
@@ -131,6 +132,7 @@ async def file_read(path: str) -> str:
 @tool(
     trust_level_required=TrustLevel.main,
     requires_approval=True,
+    action_level=3,
     security_notes=(
         "Path traversal mitigation applied. "
         "Writes are atomic (temp file + Path.replace()). "
@@ -160,6 +162,7 @@ async def file_write(path: str, content: str) -> str:
 
 @tool(
     trust_level_required=TrustLevel.main,
+    action_level=5,
     security_notes=(
         "Path traversal mitigation applied. "
         "Only directories within the configured allowlist are accessible."

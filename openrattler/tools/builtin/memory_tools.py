@@ -218,6 +218,7 @@ class NarrativeMemoryTools:
                 },
                 trust_level_required=TrustLevel.main,
                 requires_approval=False,
+                action_level=3,
                 security_notes=(
                     "All writes pass through MemorySecurityAgent pattern scan before "
                     "touching disk. Atomic write (temp + rename). Token limits enforced "
@@ -250,6 +251,7 @@ class NarrativeMemoryTools:
                 },
                 trust_level_required=TrustLevel.main,
                 requires_approval=False,
+                action_level=3,
                 security_notes=(
                     "All writes pass through MemorySecurityAgent pattern scan. "
                     "Atomic write (temp + rename). Token limit enforced before review."
@@ -282,6 +284,7 @@ class NarrativeMemoryTools:
                 },
                 trust_level_required=TrustLevel.main,
                 requires_approval=False,
+                action_level=3,
                 security_notes=(
                     "All writes pass through MemorySecurityAgent pattern scan. "
                     "Atomic write (temp + rename). Token limit enforced before review."
@@ -324,6 +327,7 @@ class NarrativeMemoryTools:
                 },
                 trust_level_required=TrustLevel.main,
                 requires_approval=False,
+                action_level=3,
                 security_notes=(
                     "Elevated approval path: rationale is required and validated before "
                     "MemorySecurityAgent review. Approval metadata includes unified diff "
@@ -357,6 +361,7 @@ class NarrativeMemoryTools:
                     },
                     trust_level_required=TrustLevel.main,
                     requires_approval=False,
+                    action_level=5,
                     security_notes=(
                         "Read-only. No security review needed — returns stored data only."
                     ),
@@ -388,6 +393,7 @@ class NarrativeMemoryTools:
                     },
                     trust_level_required=TrustLevel.main,
                     requires_approval=False,
+                    action_level=3,
                     security_notes=(
                         "All writes pass through MemorySecurityAgent pattern scan before "
                         "touching disk. The 'history' key cannot be overwritten by callers."
