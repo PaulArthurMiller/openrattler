@@ -57,23 +57,21 @@ and synthesis output visibility.
 
 ---
 
-## TODO — Inject Current Date/Time into Corvus
+## DONE — Inject Current Date/Time into Corvus
 
-**Status:** Noted 2026-04-03 during /smoketest of build 38.4.
+**Completed:** 2026-04-03 | **Branch:** `feat/datetime-heartbeat-trigger`
 
-LLMs default to assuming the current date is near their training cutoff when
-no date is provided. The ResearchAgent's search planner and synthesis LLM now
-receive the current UTC datetime in every prompt (added 2026-04-03). Corvus
-itself does not yet receive it.
+Both injection points are now in place:
 
-Add current date/time to Corvus at two points:
-1. **Startup system prompt** — inject `Current date: {datetime}` into Corvus's
-   system prompt so it has temporal grounding from the first message.
-2. **Heartbeat** — include the current datetime in each heartbeat trigger so
-   Corvus always has a fresh timestamp even in long-running sessions.
+1. **Startup system prompt** ✅ — `_build_workspace_block()` in
+   `identity/loader.py` already injected `Current date/time (UTC)` into every
+   session's system prompt (added in build 35.1, March 17). Applies to both
+   CLI chat and the full server run.
 
-This is especially important for time-sensitive queries, date calculations,
-and any task where Corvus needs to reason about "now" vs. "then".
+2. **Heartbeat trigger** ✅ — `HeartbeatProcessor.run_cycle()` in
+   `processors/heartbeat.py` now includes `Current date/time: {now_str}` in
+   the trigger message content, so Corvus sees a fresh timestamp on every
+   scheduled check-in regardless of how long the server has been running.
 
 ---
 
