@@ -12,6 +12,7 @@ from typing import Optional
 
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.tools import ToolDefinition
+from openrattler.security.action_levels import ApprovalThresholdPolicy
 
 # ---------------------------------------------------------------------------
 # Trust level ordering
@@ -97,14 +98,32 @@ def check_permission(
     return True, None
 
 
-def needs_approval(tool_def: ToolDefinition) -> bool:
+def needs_approval(
+    tool_def: ToolDefinition,
+    policy: Optional[ApprovalThresholdPolicy] = None,
+) -> bool:
     """Return ``True`` if this tool must pause for human approval before execution.
+
+    When *policy* is provided (piece 39.3+), the decision is made by
+    ``policy.requires_approval(tool_def.action_level)``.  When *policy* is
+    ``None`` (backward-compat path used until ``ToolExecutor`` is wired in
+    piece 39.5), the old ``tool_def.requires_approval`` boolean is used.
+
+    Args:
+        tool_def: Registered metadata for the tool being checked.
+        policy:   ``ApprovalThresholdPolicy`` to consult.  Pass ``None`` to
+                  use the legacy ``tool_def.requires_approval`` flag.
 
     Security notes:
     - This check is based solely on the tool's registered metadata; it cannot
       be overridden by the calling agent.
-    - The actual approval flow is implemented in Piece 16.1 (ApprovalManager).
+    - The actual approval flow is implemented by ``ApprovalManager``.
       Components that call ``execute()`` should check this flag and route
       through the approval manager before invoking the tool handler.
+    - The old ``tool_def.requires_approval`` fallback is deprecated and will
+      be removed once ``ToolExecutor`` always passes a policy (piece 39.5).
     """
+    if policy is not None:
+        return policy.requires_approval(tool_def.action_level)
+    # Legacy path: fall back to the boolean flag on the tool definition.
     return tool_def.requires_approval

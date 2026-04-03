@@ -36,7 +36,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from openrattler.models.agents import AgentConfig
 from openrattler.models.mcp import MCPSecurityConfig
@@ -162,6 +162,36 @@ class SecurityConfig(BaseModel):
             "Paranoid profile only."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Action approval threshold (piece 39.3)
+    # ------------------------------------------------------------------
+
+    approval_threshold: Optional[int] = Field(
+        default=None,
+        description=(
+            "Override the profile's default approval threshold. "
+            "Tools with action_level <= this value require human approval. "
+            "Valid range: 1 (approve only level-1 actions) to 5 (approve everything). "
+            "None means use the profile default: minimal=1, standard=3, paranoid=5."
+        ),
+    )
+
+    @field_validator("approval_threshold")
+    @classmethod
+    def _validate_approval_threshold(cls, v: Optional[int]) -> Optional[int]:
+        """Reject out-of-range threshold values rather than silently clamping them.
+
+        Silent clamping would hide misconfiguration (e.g. a typo of 0 instead of 1
+        would silently disable all approval gates in a minimal profile).
+        """
+        if v is not None and not (1 <= v <= 5):
+            raise ValueError(
+                f"approval_threshold must be between 1 and 5 (got {v}). "
+                "Valid values: 1 (approve only permanent/irreversible actions) "
+                "to 5 (require approval for all actions including read-only)."
+            )
+        return v
 
     # ------------------------------------------------------------------
     # MCP
