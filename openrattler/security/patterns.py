@@ -79,8 +79,20 @@ SUSPICIOUS_PATTERNS: list[tuple[str, str]] = [
     ("instruction_override", r"never\s+(?:ask|prompt|confirm)\b"),
     # ------------------------------------------------------------------
     # Credential access — probing for or referencing secrets
+    # Require context qualifiers for common words (token, secret) to
+    # avoid false positives on everyday language ("the secret to...",
+    # "CSRF token").  Principle mirrors command_injection patterns above.
     # ------------------------------------------------------------------
-    ("credential_access", r"api[_-]?key|password|token|secret"),
+    # api_key and password are specific enough without context
+    ("credential_access", r"api[_-]?key|\bpassword\b"),
+    # secret and token only flagged when combined with credential-context
+    # qualifiers (api_secret, auth_token, bearer token, secret_key, etc.)
+    # or when followed by an assignment operator (token=, secret:).
+    # Separator [_\-\s]? allows underscore, hyphen, or a single space
+    # so "auth_token", "auth-token", and "auth token" are all caught.
+    ("credential_access", r"(?:api|app|client|auth|jwt)[_\-\s]?(?:secret|token)"),
+    ("credential_access", r"(?:secret|access|bearer)[_\-\s]?(?:key|token)"),
+    ("credential_access", r"\b(?:token|secret)\s*[:=]\s*\S"),
 ]
 
 

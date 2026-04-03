@@ -216,9 +216,23 @@ class ResearchAgent:
         """Core pipeline — separated so the outer method can catch errors."""
         # Phase 0: Plan — LLM selects endpoint and filters for this query
         search_params = await self._plan_search(request)
+        logger.info(
+            "_plan_search result: endpoint=%r query=%r tbs=%r",
+            search_params.endpoint,
+            search_params.query,
+            getattr(search_params, "tbs", None),
+        )
 
         # Phase 1: Search — execute with the planned parameters
         search_hits = await self._web_search(search_params)
+
+        # URL-discovery shortcut: "search" endpoint is for discovering sources,
+        # not fetching content.  Return the URL list directly — no fetch, no
+        # synthesis.  The citation list is the deliverable.
+        if search_params.endpoint == "search":
+            return await self._build_url_discovery_result(
+                search_hits, request, trace_id, from_agent, to_agent, session_key
+            )
 
         # Phase 2: Fetch each hit, applying safety constraints
         fetched: list[dict[str, Any]] = []
@@ -284,7 +298,9 @@ class ResearchAgent:
             return default
 
         enabled = sorted(self._config.serper_config.enabled_endpoints)
+        current_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         user_content = (
+            f"Current date and time: {current_dt}\n\n"
             f"Research query: {request.query}\n\n"
             f"Enabled search endpoints: {', '.join(enabled)}\n\n"
             "Construct the search parameters as a JSON object."
@@ -507,6 +523,11 @@ class ResearchAgent:
                 model=model,
                 max_tokens=1024,
             )
+            logger.info(
+                "_synthesize: LLM produced %d chars: %r",
+                len(response.content),
+                response.content[:500],
+            )
             return response.content[:2000]
         except Exception as exc:
             logger.warning("_synthesize: LLM call failed (%s); falling back to stub summary", exc)
@@ -522,7 +543,11 @@ class ResearchAgent:
         System message: the full SKILL.md content loaded at instantiation.
         User message:   the query plus formatted snippets from each fetched page.
         """
-        user_parts: list[str] = [f"Research query: {request.query}\n"]
+        current_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        user_parts: list[str] = [
+            f"Current date and time: {current_dt}\n",
+            f"Research query: {request.query}\n",
+        ]
 
         if fetched:
             user_parts.append("Fetched sources:\n")
@@ -568,6 +593,58 @@ class ResearchAgent:
             parts.append(f"[{i + 1}] {title} — {url}")
 
         return " ".join(parts)[:2000]
+
+    # ------------------------------------------------------------------
+    # URL-discovery result builder (endpoint="search")
+    # ------------------------------------------------------------------
+
+    async def _build_url_discovery_result(
+        self,
+        search_hits: list[dict[str, Any]],
+        request: ResearchRequest,
+        trace_id: str,
+        from_agent: str,
+        to_agent: str,
+        session_key: str,
+    ) -> UniversalMessage:
+        """Build a UM for URL-discovery mode (endpoint='search').
+
+        The 'search' endpoint returns source URLs from Serper — no page
+        content is fetched.  The citation list is the deliverable; the
+        summary describes the discovery result in plain text.
+
+        The sanitizer still runs so the URL list is validated before the
+        UM is constructed.
+        """
+        hits = search_hits[: request.max_results]
+        raw_summary = (
+            f"URL discovery for: {request.query!r}. "
+            f"Found {len(hits)} source(s). "
+            "No page content was fetched — 'search' endpoint returns URLs only. "
+            "See citations for the discovered sources."
+        )
+        raw_citations = [
+            {
+                "title": h.get("title", ""),
+                "url": h.get("url", ""),
+                "domain": "",  # overwritten by CitationRecord.ensure_domain_from_url
+                "source_type": h.get("source_type", "general"),
+                "retrieval_timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            for h in hits
+        ]
+        logger.info(
+            "_build_url_discovery_result: %d URLs for query=%r", len(hits), request.query
+        )
+        sanitized = await self._sanitizer.sanitize(
+            raw_summary=raw_summary,
+            raw_citations=raw_citations,
+            request=request,
+            trace_id=trace_id,
+        )
+        if isinstance(sanitized, ResearchError):
+            return self._build_error_um(sanitized, from_agent, to_agent, session_key, trace_id)
+        return self._build_response_um(sanitized, from_agent, to_agent, session_key, trace_id)
 
     # ------------------------------------------------------------------
     # Citation helpers

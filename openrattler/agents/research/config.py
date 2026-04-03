@@ -69,7 +69,7 @@ class ResearchAgentConfig:
     Security notes:
     - ``allowed_content_types`` is the fetch gate.  Do not add ``text/javascript``,
       ``application/x-www-form-urlencoded``, or binary types.
-    - ``max_fetch_size_bytes`` at 100 KB is intentionally conservative.  Increase
+    - ``max_fetch_size_bytes`` at 300 KB is intentionally conservative.  Increase
       only with documented justification — larger values expand the injection surface.
     """
 

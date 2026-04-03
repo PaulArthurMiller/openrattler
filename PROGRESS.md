@@ -19,6 +19,85 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /smoketest 2026-04-03 — ResearchAgent 38.4 Live Test ✅
+
+**Branch:** `fix/smoketest-2026-04-03` | **PR:** see GitHub
+
+Bugs found and fixed (5 commits):
+
+1. **credential_access pattern false positives** (`security/patterns.py`) — bare
+   `secret` and `token` matched cooking content ("the secret to juicy chicken").
+   Split into context-qualified patterns matching only credential-specific phrases.
+   All 27 security pattern tests still pass.
+
+2. **SKILL.md synthesis error format** (`SKILL.md`) — LLM was returning JSON
+   (with markdown fences) when sources were blocked, because the prompt said
+   "return a ResearchError". Changed to plain-text guidance. Synthesis output
+   is now always clean text.
+
+3. **search endpoint = URL discovery** (`agent.py`, `SEARCH_PLAN.md`, `SKILL.md`)
+   — "search" endpoint now skips fetch/synthesis and returns the Serper URL list
+   directly as citations. Planner updated to understand "search" is URL discovery,
+   not content retrieval.
+
+4. **max_fetch_size_bytes** (`config.py`) — raised to 1MB then 2MB for testing
+   (YouTube pages are 1.18MB actual). Reverted to 300KB after confirming YouTube
+   yields only boilerplate HTML regardless of size cap.
+
+5. **Date-aware planning** (`agent.py`, `SEARCH_PLAN.md`) — injected current UTC
+   datetime into both `_plan_search` and `_build_synthesis_messages` prompts.
+   Added tbs date-calculation guidance to SEARCH_PLAN.md. Planner previously
+   chose `tbs='qdr:m'` for "November 2025" (5 months ago); now correctly omits
+   tbs or uses `qdr:y`. Confirmed with Ohio election results retest — first time
+   the pipeline returned real, on-topic synthesis content.
+
+Also added: `ws_send.py` one-shot WebSocket client for non-interactive smoke
+testing; debug INFO logs in `research_tools.py` and `agent.py` for UM content
+and synthesis output visibility.
+
+---
+
+## TODO — Inject Current Date/Time into Corvus
+
+**Status:** Noted 2026-04-03 during /smoketest of build 38.4.
+
+LLMs default to assuming the current date is near their training cutoff when
+no date is provided. The ResearchAgent's search planner and synthesis LLM now
+receive the current UTC datetime in every prompt (added 2026-04-03). Corvus
+itself does not yet receive it.
+
+Add current date/time to Corvus at two points:
+1. **Startup system prompt** — inject `Current date: {datetime}` into Corvus's
+   system prompt so it has temporal grounding from the first message.
+2. **Heartbeat** — include the current datetime in each heartbeat trigger so
+   Corvus always has a fresh timestamp even in long-running sessions.
+
+This is especially important for time-sensitive queries, date calculations,
+and any task where Corvus needs to reason about "now" vs. "then".
+
+---
+
+## Future Upgrade — ResearchAgent Multi-Search Retry
+
+**Status:** Noted 2026-04-03 during /smoketest of build 38.4.
+
+When the initial search returns fewer than the requested number of *usable*
+results (i.e. sources that were successfully fetched and contain real content),
+the ResearchAgent should retry with a different search — up to a maximum of 3
+total searches per request. The minimum usable result count (`min_results`)
+should be part of the ResearchRequest passed from Corvus.
+
+Design notes:
+- `ResearchRequest` gains an optional `min_results: int = 1` field
+- After each search + fetch cycle, count successfully fetched pages
+- If count < `min_results` and retries_remaining > 0: re-plan and re-search
+  (the planner should vary the query or endpoint on retries)
+- Cap at 3 total searches to bound Serper credit usage
+- Valid fetched pages accumulate across retries; synthesis runs once at the end
+  on the full collected set
+
+---
+
 ## Build Piece 38.4 — ResearchAgent Search Planning Step (planned)
 
 **Status:** Planned — see `.claude/BUILD_PIECE_38_4.md`

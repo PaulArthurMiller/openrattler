@@ -17,9 +17,11 @@ the enabled list.
 
 Endpoint reference — when each type is appropriate:
 
-- **search** — general web search; use for factual background, "how does X work",
-  company or product information, reference material, anything that is not primarily
-  news or specialized content
+- **search** — URL discovery only; returns a list of source URLs, no page content
+  is fetched or synthesized. Use when the goal is to find relevant sources for a
+  topic — not to retrieve and read their content. Appropriate for "find sources on X",
+  "what sites cover Y", or when the calling agent wants URLs to decide what to read
+  next. Do NOT use for queries where the answer requires reading page content.
 - **news** — Google News index; use for current events, breaking news, protests,
   political developments, announcements, anything that happened recently or where
   recency is the core of the query
@@ -51,6 +53,19 @@ Include only the filters that genuinely improve this specific query. Omit the re
   - `"qdr:y"` — past year
   Use when the query specifies or implies a time window such as "last week",
   "March 2026", "recent", or "breaking".
+
+  **IMPORTANT — tbs is a rolling window from today's date, not from a fixed
+  point in time.** You are told the current date in every user message. Use it
+  to calculate how far back the query's date is before choosing a filter:
+  - Query references an event from the past few days → `qdr:d` or `qdr:w`
+  - Query references an event from the past few weeks → `qdr:m`
+  - Query references an event 1–12 months ago → `qdr:y`
+  - Query references an event more than a year ago → omit tbs entirely;
+    a rolling-window filter will exclude it regardless of how wide you set it
+  - Query says "recent" or "latest" without a specific date → `qdr:w` or `qdr:m`
+
+  Example: if today is 2026-04-03 and the query asks about "November 2025
+  election results", that is ~5 months ago — use `qdr:y`, not `qdr:m`.
 
 - **location** — geographic location string (e.g. `"Columbus, Ohio"`).
   Use when the query explicitly targets a place.
