@@ -18,12 +18,14 @@ from typing import TYPE_CHECKING, Any, Optional
 from openrattler.models.agents import AgentConfig
 from openrattler.models.audit import AuditEvent
 from openrattler.models.tools import ToolCall, ToolResult
+from openrattler.security.action_levels import DEAD_STOP_ACTIONS, DeadStopError
 from openrattler.storage.audit import AuditLog
 from openrattler.tools.permissions import check_permission, needs_approval
 from openrattler.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from openrattler.mcp.bridge import MCPToolBridge
+    from openrattler.security.action_levels import ApprovalThresholdPolicy
     from openrattler.security.approval import ApprovalManager, ApprovalRequest
 
 
@@ -32,25 +34,36 @@ class ToolExecutor:
 
     Full execution flow:
 
-    1. Look up the tool definition in the registry.
-    2. Run ``check_permission`` — return error result if denied.
-    3. If ``needs_approval`` and an ``ApprovalManager`` is configured,
-       request human approval and block until resolved or timed out.
-       Denial (including timeout) returns an error ``ToolResult`` immediately.
-    4. Invoke the handler in a try/except — return error result on any
+    1. Dead-stop check — if the tool name is in ``DEAD_STOP_ACTIONS``, log
+       ``dead_stop_blocked`` and return an error ``ToolResult`` immediately.
+       This check runs before permission checks and the approval gate.
+    2. Look up the tool definition in the registry.
+    3. Run ``check_permission`` — return error result if denied.
+    4. If MCP tool, delegate to ``MCPToolBridge`` and return.
+    5. Check ``needs_approval(tool_def, policy)`` — if approval required and
+       an ``ApprovalManager`` is configured, request human approval and block
+       until resolved or timed out.  Denial (including timeout) returns an
+       error ``ToolResult`` immediately.
+    6. If approved, call ``consume_token`` to validate the single-use token.
+       An expired or replayed token blocks execution.
+    7. Invoke the handler in a try/except — return error result on any
        exception so the LLM can recover gracefully.
-    5. Log the outcome to the audit log.
-    6. Return a ``ToolResult``.
+    8. Log the outcome to the audit log.
+    9. Return a ``ToolResult``.
 
     Security notes:
     - This class **never** raises — every code path returns a ``ToolResult``.
+    - The dead-stop check runs unconditionally before any other gate.
     - Permission checks are performed on every call; they are never cached.
     - Approval is fail-secure: timeout auto-denies; absence of an
       ``ApprovalManager`` does *not* skip approval (execution proceeds to
       maintain backward compatibility, but production deployments should
       always supply a manager for approval-required tools).
-    - All executions (success, denial, approval denial, and failure) are
-      audit-logged.
+    - Token consumption is a second line of defence against replay: even a
+      valid approval result is rejected if the token has already been used
+      or has expired since the approval was granted.
+    - All executions (success, denial, approval denial, dead-stop, and
+      failure) are audit-logged.
     """
 
     def __init__(
@@ -59,6 +72,7 @@ class ToolExecutor:
         audit_log: AuditLog,
         approval_manager: Optional["ApprovalManager"] = None,
         mcp_bridge: Optional["MCPToolBridge"] = None,
+        policy: Optional["ApprovalThresholdPolicy"] = None,
     ) -> None:
         """Initialise the executor.
 
@@ -66,16 +80,22 @@ class ToolExecutor:
             registry:         Registry containing all registered tools and handlers.
             audit_log:        Audit log that receives one entry per execution.
             approval_manager: Optional human-in-the-loop approval broker.
-                              When set, any tool with ``requires_approval=True``
-                              will pause here until approved, denied, or timed out.
+                              When set, tools requiring approval will pause here
+                              until approved, denied, or timed out.
             mcp_bridge:       Optional MCP security bridge.  When set, tool calls
                               whose name starts with ``mcp:`` are routed to the
                               bridge instead of a local Python handler.
+            policy:           Optional ``ApprovalThresholdPolicy`` that maps action
+                              levels to approval requirements.  When provided, it
+                              replaces the legacy ``tool_def.requires_approval``
+                              boolean.  When ``None``, the legacy flag is used
+                              (backward-compat until all callers pass a policy).
         """
         self._registry = registry
         self._audit = audit_log
         self._approval_manager = approval_manager
         self._mcp_bridge = mcp_bridge
+        self._policy = policy
 
     async def execute(
         self,
@@ -90,30 +110,51 @@ class ToolExecutor:
 
         Returns:
             A ``ToolResult`` — always, even on permission denial, approval
-            denial, or handler exception.
+            denial, dead-stop block, or handler exception.
         """
         tool_name = tool_call.tool_name
 
-        # --- Step 1: look up tool definition ---------------------------------
+        # --- Step 1: dead-stop check -----------------------------------------
+        # Runs unconditionally before tool lookup or permission check.
+        # DEAD_STOP_ACTIONS is a compile-time frozenset that cannot be overridden
+        # by any config key or approval.
+        if tool_name in DEAD_STOP_ACTIONS:
+            error = str(DeadStopError(tool_name))
+            await self._audit.log(
+                AuditEvent(
+                    event="dead_stop_blocked",
+                    agent_id=agent_config.agent_id,
+                    session_key=agent_config.session_key,
+                    details={
+                        "tool": tool_name,
+                        "call_id": tool_call.call_id,
+                        "trace_id": tool_call.trace_id,
+                    },
+                )
+            )
+            return ToolResult(call_id=tool_call.call_id, success=False, error=error)
+
+        # --- Step 2: look up tool definition ---------------------------------
         tool_def = self._registry.get(tool_name)
         if tool_def is None:
             error = f"Unknown tool: '{tool_name}'"
             await self._log(agent_config, tool_call, success=False, error=error)
             return ToolResult(call_id=tool_call.call_id, success=False, error=error)
 
-        # --- Step 2: permission check ----------------------------------------
+        # --- Step 3: permission check ----------------------------------------
         allowed, reason = check_permission(agent_config, tool_name, tool_def)
         if not allowed:
             await self._log(agent_config, tool_call, success=False, error=reason)
             return ToolResult(call_id=tool_call.call_id, success=False, error=reason)
 
-        # --- Step 2b: MCP routing --------------------------------------------
+        # --- Step 4: MCP routing ---------------------------------------------
         # MCP tools (name starts with "mcp:") are delegated to MCPToolBridge,
         # which runs its own approval gate and audit logging internally.
         if tool_name.startswith("mcp:") and self._mcp_bridge is not None:
             _, remainder = tool_name.split(":", 1)
             server_id, mcp_tool_name = remainder.split(".", 1)
-            trace_id = uuid.uuid4().hex
+            # Use propagated trace_id when available; otherwise generate a fresh one.
+            trace_id = tool_call.trace_id or uuid.uuid4().hex
             try:
                 bridge_result = await self._mcp_bridge.execute(
                     server_id=server_id,
@@ -135,11 +176,12 @@ class ToolExecutor:
             )
             return bridge_result
 
-        # --- Step 3: approval gate -------------------------------------------
-        if needs_approval(tool_def) and self._approval_manager is not None:
-            approval_result = await self._approval_manager.request_approval(
-                self._build_approval_request(agent_config, tool_call, self._approval_manager)
+        # --- Step 5: approval gate -------------------------------------------
+        if needs_approval(tool_def, self._policy) and self._approval_manager is not None:
+            request = self._build_approval_request(
+                agent_config, tool_call, self._approval_manager, tool_def.action_level
             )
+            approval_result = await self._approval_manager.request_approval(request)
             if not approval_result.approved:
                 error = f"Tool '{tool_name}' execution denied by {approval_result.decided_by}"
                 await self._log(
@@ -151,7 +193,31 @@ class ToolExecutor:
                 )
                 return ToolResult(call_id=tool_call.call_id, success=False, error=error)
 
-        # --- Step 4: invoke handler ------------------------------------------
+            # --- Step 6: token consumption -----------------------------------
+            # Single-use token validated immediately before execution.
+            # consume_token returns False if the token is expired or replayed.
+            if approval_result.approval_token is not None:
+                token_valid = self._approval_manager.consume_token(
+                    approval_result.approval_token,
+                    approval_result.token_expiry,  # type: ignore[arg-type]
+                )
+                if not token_valid:
+                    error = f"Approval token for '{tool_name}' has expired or been replayed"
+                    await self._audit.log(
+                        AuditEvent(
+                            event="approval_token_rejected",
+                            agent_id=agent_config.agent_id,
+                            session_key=agent_config.session_key,
+                            details={
+                                "tool": tool_name,
+                                "call_id": tool_call.call_id,
+                                "approval_id": approval_result.approval_id,
+                            },
+                        )
+                    )
+                    return ToolResult(call_id=tool_call.call_id, success=False, error=error)
+
+        # --- Step 7: invoke handler ------------------------------------------
         handler = self._registry.get_handler(tool_name)
         if handler is None:
             error = f"No handler registered for tool '{tool_name}'"
@@ -168,10 +234,10 @@ class ToolExecutor:
             await self._log(agent_config, tool_call, success=False, error=error)
             return ToolResult(call_id=tool_call.call_id, success=False, error=error)
 
-        # --- Step 5: audit log -----------------------------------------------
+        # --- Step 8: audit log -----------------------------------------------
         await self._log(agent_config, tool_call, success=True)
 
-        # --- Step 6: return result -------------------------------------------
+        # --- Step 9: return result -------------------------------------------
         return ToolResult(call_id=tool_call.call_id, success=True, result=result)
 
     # ------------------------------------------------------------------
@@ -183,12 +249,15 @@ class ToolExecutor:
         agent_config: AgentConfig,
         tool_call: ToolCall,
         manager: "ApprovalManager",
+        action_level: int = 5,
     ) -> "ApprovalRequest":
         """Build an ``ApprovalRequest`` from verified agent and call data.
 
         Provenance is populated from ``agent_config`` (not from any
         user-controlled field of ``tool_call``) so it is independently
-        verifiable.
+        verifiable.  ``action_level`` comes from the tool definition, not the
+        agent.  ``rationale`` and ``trace_id`` are taken from ``tool_call``
+        when present.
         """
         from openrattler.security.approval import ApprovalRequest
 
@@ -206,6 +275,9 @@ class ToolExecutor:
             },
             timestamp=datetime.now(timezone.utc),
             timeout_seconds=manager.default_timeout_seconds,
+            action_level=action_level,
+            rationale=tool_call.rationale,
+            trace_id=tool_call.trace_id,
         )
 
     async def _log(

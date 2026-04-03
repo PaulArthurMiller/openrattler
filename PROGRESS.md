@@ -19,6 +19,23 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-03 — Piece 39.5 Complete ✅
+
+**Branch:** `milestone-39.5-executor-startup-integration` | **PR:** open
+
+Wired all 39.1–39.4 components into the ToolExecutor and startup factory, completing the Universal Action Approval Framework:
+
+- **`openrattler/models/tools.py`** — Added `trace_id: Optional[str]` and `rationale: Optional[str]` to `ToolCall` so the executor can propagate these into approval requests
+- **`openrattler/tools/executor.py`** — Full 39.5 rewrite: (1) unconditional dead-stop check before any other gate — returns `ToolResult(error=...)`, logs `dead_stop_blocked`; (2) `policy: Optional[ApprovalThresholdPolicy]` constructor param replaces legacy `requires_approval` bool; (3) `needs_approval(tool_def, self._policy)` replaces old `needs_approval(tool_def)`; (4) `_build_approval_request` now includes `action_level`, `rationale`, `trace_id` from tool def and tool call; (5) `consume_token` called after approval, logs `approval_token_rejected` on failure
+- **`openrattler/agents/runtime.py`** — Tool loop injects `user_message.trace_id` into each `ToolCall` via `model_copy` before passing to executor
+- **`openrattler/startup.py`** — Step 9a: builds `ApprovalManager` + `ApprovalThresholdPolicy.from_security_config()` + `ApprovalHandlerRouter` from config.channels (Slack > Email > CLI fallback); wires into `ToolExecutor(policy=policy, approval_manager=...)`
+- **9 new tests** in `tests/test_tools/test_executor.py` (25 total in that file), covering: level-5 auto-approved, level-2 triggers gate, dead-stop blocked without prompt, expired token rejected with audit log, denied approval blocks handler, trace_id propagated, rationale propagated
+- 1880 tests passing (1 skipped), mypy clean, black clean
+
+**Current milestone:** Build Pieces 39.1–39.5 all complete ✅ — the Universal Action Approval Framework is fully integrated
+
+---
+
 ## /build 2026-04-03 — Piece 39.4 Complete ✅
 
 **Branch:** `milestone-39.4-handler-routing` | **PR:** open

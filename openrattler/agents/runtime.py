@@ -164,8 +164,11 @@ class AgentRuntime:
                 # Add assistant tool-call turn to the in-memory message list
                 messages.append(self._assistant_tool_call_message(last_response))
 
-                # Execute each tool call and add results
+                # Execute each tool call and add results.
+                # Inject trace_id from the originating UniversalMessage so
+                # approval audit events can be correlated end-to-end.
                 for tc in last_response.tool_calls:
+                    tc = tc.model_copy(update={"trace_id": user_message.trace_id})
                     tool_result = await self._tool_executor.execute(self._config, tc)
                     result_content = (
                         str(tool_result.result)
