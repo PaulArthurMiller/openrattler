@@ -333,6 +333,7 @@ The pieces are ordered so that each one compiles and passes tests independently 
 
 ## Status
 
-Current milestone: **39.2** (not started)  
+Current milestone: **39.3** (not started)  
 Piece 39.1: ✅ complete — PR #54  
+Piece 39.2: ✅ complete — PR open  
 Last updated: 2026-04-03

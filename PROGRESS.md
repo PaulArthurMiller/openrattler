@@ -19,6 +19,18 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-03 — Piece 39.2 Complete ✅
+
+**Branch:** `milestone-39.2-approval-token-system` | **PR:** open
+
+Enhanced the approval system with single-use tokens, dead-stop integration, and richer audit fields:
+
+- **`openrattler/security/approval.py`** — `ApprovalRequest` gains `action_level`, `rationale`, `trace_id`, `approval_token` (auto-UUID), `token_expiry` (now+5min); `ApprovalResult` gains `approval_token`/`token_expiry` (passed through on approval, None on denial/timeout); `ApprovalManager` gains `consume_token()` (single-use, time-bounded), dead-stop check in `request_approval()` with `dead_stop_blocked` audit event, and `action_level`/`trace_id` in all audit events; `CLIApprovalHandler._print_request()` updated with level label and rationale block (after action, separated by divider)
+- **23 new tests** in `tests/test_security/test_approval.py` (52 total in that file)
+- 1817 tests passing, mypy clean, black clean
+
+---
+
 ## /build 2026-04-03 — Piece 39.1 Complete ✅
 
 **Branch:** `milestone-39.1-action-level-model` | **PR:** open
@@ -32,7 +44,7 @@ Built the action level foundation for the Universal Action Approval Framework:
 - **11 new tests** in `tests/test_security/test_action_levels.py`
 - 1794 tests passing, mypy clean, black clean
 
-**Current milestone:** 39.2 — Enhanced ApprovalRequest + Token System (not started)
+**Current milestone:** 39.3 — Threshold Policy + Config Integration (not started)
 
 ---
 
