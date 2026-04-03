@@ -207,6 +207,7 @@ class OutboundChannelTools:
                         "required": ["recipient", "message"],
                     },
                     requires_approval=True,
+                    action_level=2,
                     trust_level_required=TrustLevel.main,
                     security_notes=(
                         "Validates E.164 recipient format. "
@@ -244,6 +245,7 @@ class OutboundChannelTools:
                         "required": ["channel_or_user", "message"],
                     },
                     requires_approval=True,
+                    action_level=2,
                     trust_level_required=TrustLevel.main,
                     security_notes=(
                         "Validates #channel/@user format. "
@@ -283,6 +285,7 @@ class OutboundChannelTools:
                         "required": ["to_address", "subject", "body"],
                     },
                     requires_approval=True,
+                    action_level=2,
                     trust_level_required=TrustLevel.main,
                     security_notes=(
                         "Validates RFC 5322 email format. "

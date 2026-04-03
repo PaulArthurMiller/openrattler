@@ -167,6 +167,7 @@ def tool(
     description: Optional[str] = ...,
     trust_level_required: TrustLevel = ...,
     requires_approval: bool = ...,
+    action_level: int = ...,
     security_notes: str = ...,
     registry: Optional[ToolRegistry] = ...,
 ) -> Callable[[_F], _F]: ...
@@ -179,6 +180,7 @@ def tool(
     description: Optional[str] = None,
     trust_level_required: TrustLevel = TrustLevel.main,
     requires_approval: bool = False,
+    action_level: int = 5,
     security_notes: str = "",
     registry: Optional[ToolRegistry] = None,
 ) -> Any:
@@ -228,6 +230,7 @@ def tool(
             description=description or _first_doc_line(f) or (name or f.__name__),
             parameters=_infer_parameters(f),
             requires_approval=requires_approval,
+            action_level=action_level,
             trust_level_required=trust_level_required,
             security_notes=security_notes,
         )

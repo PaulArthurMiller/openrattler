@@ -38,6 +38,15 @@ class ToolDefinition(BaseModel):
         default=False,
         description="Whether this tool must pause for human approval before execution",
     )
+    action_level: int = Field(
+        default=5,
+        description=(
+            "Action severity level (1–5). 1 = permanent/irreversible/financial cost; "
+            "5 = read-only/sandboxed. Default is 5 (safest). Tools must opt into "
+            "lower levels explicitly. Used by ApprovalThresholdPolicy to decide "
+            "whether approval is required."
+        ),
+    )
     trust_level_required: TrustLevel = Field(
         description="Minimum agent trust level required to call this tool"
     )

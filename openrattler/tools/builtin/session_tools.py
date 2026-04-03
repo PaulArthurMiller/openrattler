@@ -54,6 +54,7 @@ def configure_transcript_store(store: Optional[TranscriptStore]) -> None:
 @tool(
     trust_level_required=TrustLevel.main,
     requires_approval=True,
+    action_level=4,
     security_notes=(
         "Cross-session data access. Requires human approval before execution. "
         "Every invocation (approved or denied) is audit-logged by the executor. "
