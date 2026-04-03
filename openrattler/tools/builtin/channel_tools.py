@@ -285,7 +285,7 @@ class OutboundChannelTools:
                         "required": ["to_address", "subject", "body"],
                     },
                     requires_approval=True,
-                    action_level=1,
+                    action_level=2,
                     trust_level_required=TrustLevel.main,
                     security_notes=(
                         "Validates RFC 5322 email format. "

@@ -213,8 +213,9 @@ def test_specific_tool_action_levels() -> None:
     definitions = dict(_collect_builtin_tool_definitions())
     print(f"All tool action levels: {definitions}")
 
-    # channel_tools
-    assert definitions["send_email"] == 1, "send_email should be level 1 (has financial cost)"
+    # channel_tools — all three at level 2 so communication channels are reachable
+    # under standard profile (threshold=3 approves ≤3, threshold=2 approves ≤2)
+    assert definitions["send_email"] == 2, "send_email should be level 2"
     assert definitions["send_slack_message"] == 2, "send_slack_message should be level 2"
     assert definitions["send_sms"] == 2, "send_sms should be level 2"
 
