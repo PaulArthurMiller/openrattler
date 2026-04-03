@@ -144,6 +144,16 @@ class ResearchTools:
 
         result_msg: UniversalMessage = await agent.run(request, trace_id)
 
+        # Smoke-test visibility: log the full UM params so we can inspect
+        # exactly what the ResearchAgent sends to the calling LLM.
+        import json as _json
+        logger.info(
+            "research_query UM [type=%s trace=%s]:\n%s",
+            result_msg.type,
+            trace_id,
+            _json.dumps(result_msg.params, indent=2, default=str),
+        )
+
         # Step 4: Format and return.
         return self._format_result(result_msg)
 

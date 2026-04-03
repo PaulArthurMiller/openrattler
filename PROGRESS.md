@@ -19,6 +19,44 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /smoketest 2026-04-03 — ResearchAgent 38.4 Live Test ✅
+
+**Branch:** `fix/smoketest-2026-04-03` | **PR:** see GitHub
+
+Bugs found and fixed (5 commits):
+
+1. **credential_access pattern false positives** (`security/patterns.py`) — bare
+   `secret` and `token` matched cooking content ("the secret to juicy chicken").
+   Split into context-qualified patterns matching only credential-specific phrases.
+   All 27 security pattern tests still pass.
+
+2. **SKILL.md synthesis error format** (`SKILL.md`) — LLM was returning JSON
+   (with markdown fences) when sources were blocked, because the prompt said
+   "return a ResearchError". Changed to plain-text guidance. Synthesis output
+   is now always clean text.
+
+3. **search endpoint = URL discovery** (`agent.py`, `SEARCH_PLAN.md`, `SKILL.md`)
+   — "search" endpoint now skips fetch/synthesis and returns the Serper URL list
+   directly as citations. Planner updated to understand "search" is URL discovery,
+   not content retrieval.
+
+4. **max_fetch_size_bytes** (`config.py`) — raised to 1MB then 2MB for testing
+   (YouTube pages are 1.18MB actual). Reverted to 300KB after confirming YouTube
+   yields only boilerplate HTML regardless of size cap.
+
+5. **Date-aware planning** (`agent.py`, `SEARCH_PLAN.md`) — injected current UTC
+   datetime into both `_plan_search` and `_build_synthesis_messages` prompts.
+   Added tbs date-calculation guidance to SEARCH_PLAN.md. Planner previously
+   chose `tbs='qdr:m'` for "November 2025" (5 months ago); now correctly omits
+   tbs or uses `qdr:y`. Confirmed with Ohio election results retest — first time
+   the pipeline returned real, on-topic synthesis content.
+
+Also added: `ws_send.py` one-shot WebSocket client for non-interactive smoke
+testing; debug INFO logs in `research_tools.py` and `agent.py` for UM content
+and synthesis output visibility.
+
+---
+
 ## TODO — Inject Current Date/Time into Corvus
 
 **Status:** Noted 2026-04-03 during /smoketest of build 38.4.
