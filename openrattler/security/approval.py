@@ -526,3 +526,69 @@ class CLIApprovalHandler:
     def _read_input() -> str:
         """Blocking stdin read — run inside a thread executor."""
         return input("Approve? [y/N]: ")
+
+
+# ---------------------------------------------------------------------------
+# ApprovalHandlerRouter
+# ---------------------------------------------------------------------------
+
+
+class ApprovalHandlerRouter:
+    """Dispatches approval requests to the appropriate channel handler.
+
+    At construction time, the caller provides a ``preferred_channel`` name and
+    a mapping of available handlers.  On each call the router tries the preferred
+    channel first; if that channel is not in the mapping (not configured), it
+    falls back to ``CLIApprovalHandler`` so approval requests are never silently
+    dropped.
+
+    Conforms to the ``ApprovalHandler`` callable protocol:
+    ``async (request: ApprovalRequest, manager: ApprovalManager) -> None``.
+
+    Args:
+        preferred_channel: Name of the channel to dispatch to first (e.g.
+                           ``"slack"``, ``"email"``, or ``"cli"``).
+        handlers:          Mapping of channel name → handler.  Only channels
+                           listed here are available for dispatch.
+
+    Security notes:
+    - Falls back to ``CLIApprovalHandler`` if the preferred channel is absent —
+      the router never raises and never silently drops an approval request.
+    - A compromised config that names a missing channel cannot suppress approvals;
+      the CLI fallback always fires.
+
+    Example::
+
+        router = ApprovalHandlerRouter(
+            preferred_channel="slack",
+            handlers={
+                "slack": SlackApprovalHandler(...),
+                "email": EmailApprovalHandler(...),
+            },
+        )
+        manager.set_handler(router)
+    """
+
+    def __init__(
+        self,
+        preferred_channel: str,
+        handlers: dict[str, ApprovalHandler],
+    ) -> None:
+        self._preferred_channel = preferred_channel
+        self._handlers = dict(handlers)
+        # Pre-built CLI fallback — instantiated once, not on every call.
+        self._cli_fallback: ApprovalHandler = CLIApprovalHandler()
+
+    async def __call__(self, request: ApprovalRequest, manager: ApprovalManager) -> None:
+        """Dispatch the request to the preferred channel or fall back to CLI.
+
+        Args:
+            request: The pending approval request.
+            manager: The ``ApprovalManager`` broker; the selected handler must
+                     call ``manager.resolve()`` to unblock execution.
+        """
+        handler = self._handlers.get(self._preferred_channel)
+        if handler is None:
+            # Preferred channel not configured — fall back to CLI.
+            handler = self._cli_fallback
+        await handler(request, manager)

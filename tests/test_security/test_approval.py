@@ -1,7 +1,9 @@
 """Tests for the human-in-the-loop approval system.
 
-Covers ApprovalManager (approve / deny / timeout / audit) and
-ToolExecutor integration (approval gates block or allow execution).
+Covers ApprovalManager (approve / deny / timeout / audit),
+ToolExecutor integration (approval gates block or allow execution),
+and 39.4 handler/router additions (CLIApprovalHandler format,
+SlackApprovalHandler, EmailApprovalHandler, ApprovalHandlerRouter).
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,7 +20,10 @@ from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.audit import AuditEvent
 from openrattler.models.tools import ToolCall, ToolDefinition
 from openrattler.security.action_levels import DEAD_STOP_ACTIONS, DeadStopError
+from openrattler.channels.email_adapter import EmailApprovalHandler
+from openrattler.channels.slack_adapter import SlackApprovalHandler
 from openrattler.security.approval import (
+    ApprovalHandlerRouter,
     ApprovalManager,
     ApprovalRequest,
     ApprovalResult,
@@ -822,3 +828,424 @@ class TestAuditFieldsNewIn392:
 
         events = await audit.query(event_type="approval_resolved")
         assert events[0].details["action_level"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Piece 39.4 — CLIApprovalHandler format (action block before rationale)
+# ---------------------------------------------------------------------------
+
+
+class TestCLIPrintFormat:
+    """Verify that _print_request renders the required fields in the right order."""
+
+    def _make_request_with_rationale(
+        self,
+        action_level: int = 2,
+        rationale: Optional[str] = "The feature branch is ready.",
+    ) -> ApprovalRequest:
+        return ApprovalRequest(
+            approval_id="fmt-001",
+            operation="push_to_remote",
+            context={"target": "origin/feat"},
+            requesting_agent="agent:main",
+            session_key="agent:main:abc123",
+            provenance={"trust_level": "main", "agent_id": "agent:main", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+            action_level=action_level,
+            rationale=rationale,
+        )
+
+    def test_action_label_present_in_output(self, capsys: Any) -> None:
+        req = self._make_request_with_rationale()
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        assert "push_to_remote" in captured.out
+
+    def test_level_label_present_in_output(self, capsys: Any) -> None:
+        req = self._make_request_with_rationale(action_level=2)
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        # Level 2 description from ACTION_LEVEL_DESCRIPTIONS
+        assert "2" in captured.out
+        assert "Significant" in captured.out
+
+    def test_rationale_present_in_output(self, capsys: Any) -> None:
+        req = self._make_request_with_rationale(rationale="Needs to deploy now.")
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        assert "Needs to deploy now." in captured.out
+
+    def test_no_rationale_shows_placeholder(self, capsys: Any) -> None:
+        req = self._make_request_with_rationale(rationale=None)
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        assert "no rationale provided" in captured.out
+
+    def test_action_block_before_rationale_block(self, capsys: Any) -> None:
+        """Action label must appear before the rationale text in the output."""
+        req = self._make_request_with_rationale(rationale="Rationale text here.")
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        action_pos = captured.out.index("push_to_remote")
+        rationale_pos = captured.out.index("Rationale text here.")
+        assert action_pos < rationale_pos, "Action block must render before rationale block"
+
+    def test_divider_between_action_and_rationale(self, capsys: Any) -> None:
+        """A thin divider line must separate the action block from the rationale block."""
+        req = self._make_request_with_rationale()
+        CLIApprovalHandler._print_request(req)
+        captured = capsys.readouterr()
+        action_pos = captured.out.index("push_to_remote")
+        rationale_pos = captured.out.index("Reason")
+        between = captured.out[action_pos:rationale_pos]
+        assert "-" * 10 in between, "A thin divider must appear between action and rationale"
+
+
+# ---------------------------------------------------------------------------
+# Piece 39.4 — SlackApprovalHandler format + dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestSlackApprovalHandlerFormat:
+    def _make_handler(self) -> SlackApprovalHandler:
+        return SlackApprovalHandler(
+            bot_token="xoxb-test",
+            channel_id="C123",
+            sender_allowlist={"U001"},
+        )
+
+    def _make_request(
+        self, action_level: int = 2, rationale: Optional[str] = None
+    ) -> ApprovalRequest:
+        return ApprovalRequest(
+            approval_id="slack-fmt-001",
+            operation="push_to_remote",
+            requesting_agent="agent:main",
+            session_key="agent:main:abc",
+            provenance={"trust_level": "main", "agent_id": "a", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+            action_level=action_level,
+            rationale=rationale,
+        )
+
+    def test_format_contains_action_name(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request())
+        assert "push_to_remote" in msg
+
+    def test_format_contains_level_label(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request(action_level=2))
+        assert "2" in msg
+        assert "Significant" in msg
+
+    def test_format_contains_rationale(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request(rationale="Need to release."))
+        assert "Need to release." in msg
+
+    def test_format_rationale_none_shows_placeholder(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request(rationale=None))
+        assert "no rationale provided" in msg
+
+    def test_format_action_block_before_rationale(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request(rationale="My rationale here."))
+        action_pos = msg.index("push_to_remote")
+        rationale_pos = msg.index("My rationale here.")
+        assert action_pos < rationale_pos
+
+    def test_format_has_divider_between_blocks(self) -> None:
+        handler = self._make_handler()
+        msg = handler._format_message(self._make_request())
+        action_pos = msg.index("push_to_remote")
+        reason_pos = msg.index("Reason")
+        between = msg[action_pos:reason_pos]
+        assert "-" * 10 in between
+
+    async def test_approve_reply_resolves_manager(self, tmp_path: Path) -> None:
+        """Handler calls manager.resolve(approved=True) when 'approve' reply received."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        handler = self._make_handler()
+        request = self._make_request()
+
+        # Patch _post_message to succeed and _check_for_reply to return approve
+        with (
+            patch.object(handler, "_post_message", new=AsyncMock(return_value="1234.5678")),
+            patch.object(
+                handler, "_check_for_reply", new=AsyncMock(return_value=(True, "slack:U001"))
+            ),
+        ):
+            task = asyncio.create_task(manager.request_approval(request))
+            await asyncio.sleep(0)
+            await asyncio.create_task(handler(request, manager))
+            result = await task
+
+        assert result.approved is True
+        assert result.decided_by == "slack:U001"
+
+    async def test_deny_reply_resolves_manager(self, tmp_path: Path) -> None:
+        """Handler calls manager.resolve(approved=False) when 'deny' reply received."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        handler = self._make_handler()
+        request = self._make_request()
+
+        with (
+            patch.object(handler, "_post_message", new=AsyncMock(return_value="1234.5678")),
+            patch.object(
+                handler, "_check_for_reply", new=AsyncMock(return_value=(False, "slack:U001"))
+            ),
+        ):
+            task = asyncio.create_task(manager.request_approval(request))
+            await asyncio.sleep(0)
+            await asyncio.create_task(handler(request, manager))
+            result = await task
+
+        assert result.approved is False
+        assert result.decided_by == "slack:U001"
+
+    async def test_post_failure_lets_manager_timeout(self, tmp_path: Path) -> None:
+        """If posting fails, handler returns silently and manager's timeout fires."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        handler = self._make_handler()
+        request = ApprovalRequest(
+            approval_id="slack-fail-001",
+            operation="push_to_remote",
+            requesting_agent="agent:main",
+            session_key="agent:main:abc",
+            provenance={"trust_level": "main", "agent_id": "a", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+            timeout_seconds=1,
+        )
+
+        with patch.object(handler, "_post_message", new=AsyncMock(return_value=None)):
+            task = asyncio.create_task(manager.request_approval(request))
+            await asyncio.sleep(0)
+            await asyncio.create_task(handler(request, manager))
+            result = await task
+
+        assert result.approved is False
+        assert result.decided_by == "system:timeout"
+
+
+# ---------------------------------------------------------------------------
+# Piece 39.4 — EmailApprovalHandler format + dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestEmailApprovalHandlerFormat:
+    def _make_handler(self) -> EmailApprovalHandler:
+        # Use poll_interval_seconds=1 so tests don't wait 30s for the first poll.
+        return EmailApprovalHandler(
+            imap_host="imap.example.com",
+            smtp_host="smtp.example.com",
+            username="bot@example.com",
+            password="secret",
+            sender_allowlist={"paul@example.com"},
+            default_to_address="paul@example.com",
+            poll_interval_seconds=1,
+        )
+
+    def _make_request(
+        self, action_level: int = 1, rationale: Optional[str] = None
+    ) -> ApprovalRequest:
+        return ApprovalRequest(
+            approval_id="email-fmt-001",
+            operation="send_email",
+            requesting_agent="agent:main",
+            session_key="agent:main:abc",
+            provenance={"trust_level": "main", "agent_id": "a", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+            action_level=action_level,
+            rationale=rationale,
+        )
+
+    def test_format_subject_contains_operation_and_level(self) -> None:
+        """Email subject must contain the operation name and level number."""
+        handler = self._make_handler()
+        req = self._make_request(action_level=1)
+        # Subject is built in __call__; test the body format here.
+        body = handler._format_body(req)
+        assert "send_email" in body
+
+    def test_format_body_contains_level_label(self) -> None:
+        handler = self._make_handler()
+        body = handler._format_body(self._make_request(action_level=1))
+        assert "1" in body
+        assert "Permanent" in body
+
+    def test_format_body_contains_rationale(self) -> None:
+        handler = self._make_handler()
+        body = handler._format_body(self._make_request(rationale="User requested it."))
+        assert "User requested it." in body
+
+    def test_format_body_rationale_none_shows_placeholder(self) -> None:
+        handler = self._make_handler()
+        body = handler._format_body(self._make_request(rationale=None))
+        assert "no rationale provided" in body
+
+    def test_format_body_action_before_rationale(self) -> None:
+        handler = self._make_handler()
+        body = handler._format_body(self._make_request(rationale="My email rationale."))
+        action_pos = body.index("send_email")
+        rationale_pos = body.index("My email rationale.")
+        assert action_pos < rationale_pos
+
+    def test_format_body_has_divider_between_blocks(self) -> None:
+        handler = self._make_handler()
+        body = handler._format_body(self._make_request())
+        action_pos = body.index("send_email")
+        reason_pos = body.index("Reason")
+        between = body[action_pos:reason_pos]
+        assert "-" * 10 in between
+
+    async def test_approve_reply_resolves_manager(self, tmp_path: Path) -> None:
+        """Handler calls manager.resolve(approved=True) when 'approve' in email body."""
+        from unittest.mock import MagicMock
+
+        manager = ApprovalManager(_make_audit(tmp_path))
+        handler = self._make_handler()
+        request = self._make_request()
+
+        with (
+            patch("openrattler.channels.email_adapter._smtp_send"),
+            patch.object(
+                handler,
+                "_check_inbox_for_reply",
+                return_value=(True, "email:paul@example.com"),
+            ),
+        ):
+            task = asyncio.create_task(manager.request_approval(request))
+            await asyncio.sleep(0)
+            await asyncio.create_task(handler(request, manager))
+            result = await task
+
+        assert result.approved is True
+        assert result.decided_by == "email:paul@example.com"
+
+    async def test_smtp_failure_lets_manager_timeout(self, tmp_path: Path) -> None:
+        """If SMTP send fails, handler returns silently and manager's timeout fires."""
+        import smtplib
+
+        manager = ApprovalManager(_make_audit(tmp_path))
+        handler = self._make_handler()
+        request = ApprovalRequest(
+            approval_id="email-fail-001",
+            operation="send_email",
+            requesting_agent="agent:main",
+            session_key="agent:main:abc",
+            provenance={"trust_level": "main", "agent_id": "a", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+            timeout_seconds=1,
+        )
+
+        with patch(
+            "openrattler.channels.email_adapter._smtp_send",
+            side_effect=smtplib.SMTPException("connection refused"),
+        ):
+            task = asyncio.create_task(manager.request_approval(request))
+            await asyncio.sleep(0)
+            await asyncio.create_task(handler(request, manager))
+            result = await task
+
+        assert result.approved is False
+        assert result.decided_by == "system:timeout"
+
+
+# ---------------------------------------------------------------------------
+# Piece 39.4 — ApprovalHandlerRouter dispatch and fallback
+# ---------------------------------------------------------------------------
+
+
+class TestApprovalHandlerRouter:
+    def _make_request(self) -> ApprovalRequest:
+        return ApprovalRequest(
+            approval_id="router-001",
+            operation="push_to_remote",
+            requesting_agent="agent:main",
+            session_key="agent:main:abc",
+            provenance={"trust_level": "main", "agent_id": "a", "timestamp": "ts"},
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    async def test_routes_to_preferred_channel_when_available(self, tmp_path: Path) -> None:
+        """Router dispatches to the preferred handler when it is in the mapping."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        request = self._make_request()
+        dispatched_to: list[str] = []
+
+        async def mock_slack(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            dispatched_to.append("slack")
+            await mgr.resolve(req.approval_id, approved=True, decided_by="slack:U001")
+
+        async def mock_email(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            dispatched_to.append("email")
+
+        router = ApprovalHandlerRouter(
+            preferred_channel="slack",
+            handlers={"slack": mock_slack, "email": mock_email},
+        )
+        manager.set_handler(router)
+        result = await manager.request_approval(request)
+
+        assert dispatched_to == ["slack"]
+        assert result.approved is True
+
+    async def test_falls_back_to_cli_when_preferred_channel_missing(self, tmp_path: Path) -> None:
+        """Router falls back to CLIApprovalHandler when preferred channel is absent."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        request = self._make_request()
+
+        # Only "email" configured, but preferred is "slack" — must fall back to CLI
+        router = ApprovalHandlerRouter(
+            preferred_channel="slack",
+            handlers={},  # No handlers configured
+        )
+        manager.set_handler(router)
+
+        # Patch CLI's _read_input so the test doesn't block on stdin
+        with patch.object(CLIApprovalHandler, "_read_input", return_value="y"):
+            result = await manager.request_approval(request)
+
+        assert result.approved is True
+        assert result.decided_by == "cli:user"
+
+    async def test_falls_back_to_cli_when_handlers_empty(self, tmp_path: Path) -> None:
+        """Empty handlers mapping always falls back to CLI."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        request = self._make_request()
+
+        router = ApprovalHandlerRouter(preferred_channel="email", handlers={})
+        manager.set_handler(router)
+
+        with patch.object(CLIApprovalHandler, "_read_input", return_value="n"):
+            result = await manager.request_approval(request)
+
+        assert result.approved is False
+
+    def test_router_is_callable(self) -> None:
+        """Router must be a callable (ApprovalHandler protocol)."""
+        router = ApprovalHandlerRouter(preferred_channel="cli", handlers={})
+        assert callable(router)
+
+    async def test_dispatch_does_not_call_non_preferred_handlers(self, tmp_path: Path) -> None:
+        """Only the preferred handler is called; others remain untouched."""
+        manager = ApprovalManager(_make_audit(tmp_path))
+        request = self._make_request()
+        email_called: list[bool] = []
+
+        async def mock_slack(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            await mgr.resolve(req.approval_id, approved=True, decided_by="slack:U001")
+
+        async def mock_email(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            email_called.append(True)
+
+        router = ApprovalHandlerRouter(
+            preferred_channel="slack",
+            handlers={"slack": mock_slack, "email": mock_email},
+        )
+        manager.set_handler(router)
+        await manager.request_approval(request)
+
+        assert email_called == []

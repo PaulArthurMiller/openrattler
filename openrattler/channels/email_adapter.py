@@ -44,15 +44,19 @@ from email import message_from_bytes
 from email.mime.text import MIMEText
 from email.utils import parseaddr
 from html.parser import HTMLParser
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from openrattler.channels.base import ChannelAdapter
 from openrattler.config.loader import ChannelConfig
 from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage, create_message
+from openrattler.security.action_levels import ACTION_LEVEL_DESCRIPTIONS
 from openrattler.security.patterns import scan_for_suspicious_content
 from openrattler.security.rate_limiter import RateLimiter
 from openrattler.storage.audit import AuditLog
+
+if TYPE_CHECKING:
+    from openrattler.security.approval import ApprovalManager, ApprovalRequest
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -604,3 +608,188 @@ class EmailAdapter(ChannelAdapter):
                 details=details or {},
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# EmailApprovalHandler
+# ---------------------------------------------------------------------------
+
+
+class EmailApprovalHandler:
+    """ApprovalHandler that sends approval requests via email and polls IMAP for a reply.
+
+    Sends a formatted two-block email to ``default_to_address`` (action block
+    first, rationale block second), then polls the IMAP inbox for a reply
+    containing "approve" or "deny" from an allowlisted sender.  Stops polling
+    when the request's ``timeout_seconds`` is reached; the ``ApprovalManager``'s
+    own timeout mechanism handles the final denial.
+
+    Conforms to the ``ApprovalHandler`` callable protocol:
+    ``async (request: ApprovalRequest, manager: ApprovalManager) -> None``.
+
+    Args:
+        imap_host:          IMAP server hostname (SSL, typically port 993).
+        smtp_host:          SMTP server hostname (STARTTLS, typically port 587).
+        username:           Email account login name.
+        password:           Email account password or app password.
+        sender_allowlist:   Email addresses (case-insensitive) allowed to approve/deny.
+        default_to_address: Recipient address for the approval request email.
+        imap_port:          IMAP SSL port (default 993).
+        smtp_port:          SMTP STARTTLS port (default 587).
+        poll_interval_seconds: Seconds between IMAP polls for a reply (default 10).
+
+    Security notes:
+    - Only replies from allowlisted senders are accepted; others are silently skipped.
+    - Handler respects ``request.timeout_seconds`` — stops polling before that deadline.
+    - ``password`` is never logged, audited, or included in any exception.
+    - If sending the email fails, the handler returns silently; the
+      ``ApprovalManager`` timeout will deny the request automatically.
+    - Note: email delivery latency (typically 5–30s) means a request with
+      ``timeout_seconds=30`` may expire before the recipient can respond.
+      Consider setting a longer ``timeout_seconds`` for email-routed approvals
+      (e.g. 300s for a 5-minute window).
+    """
+
+    def __init__(
+        self,
+        imap_host: str,
+        smtp_host: str,
+        username: str,
+        password: str,
+        sender_allowlist: set[str],
+        default_to_address: str,
+        imap_port: int = _DEFAULT_IMAP_PORT,
+        smtp_port: int = _DEFAULT_SMTP_PORT,
+        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL,
+    ) -> None:
+        self._imap_host = imap_host
+        self._imap_port = imap_port
+        self._smtp_host = smtp_host
+        self._smtp_port = smtp_port
+        self._username = username
+        self._password = password
+        self._sender_allowlist = {addr.lower() for addr in sender_allowlist}
+        self._default_to_address = default_to_address
+        self._poll_interval = poll_interval_seconds
+
+    async def __call__(self, request: "ApprovalRequest", manager: "ApprovalManager") -> None:
+        """Send the approval email and poll IMAP for an approve/deny reply.
+
+        Sends the formatted email, then polls the inbox until a valid reply
+        is found or the request timeout is reached.  Calls ``manager.resolve()``
+        when a decision is received.
+        """
+        subject = f"[APPROVAL REQUIRED] {request.operation} — Level {request.action_level}"
+        body = self._format_body(request)
+
+        try:
+            await asyncio.to_thread(
+                _smtp_send,
+                self._smtp_host,
+                self._smtp_port,
+                self._username,
+                self._password,
+                self._default_to_address,
+                subject,
+                body,
+            )
+        except Exception:
+            # Failed to send — let ApprovalManager timeout handle it.
+            return
+
+        deadline = asyncio.get_event_loop().time() + request.timeout_seconds
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(self._poll_interval)
+            decision = await asyncio.to_thread(self._check_inbox_for_reply)
+            if decision is not None:
+                approved, decided_by = decision
+                try:
+                    await manager.resolve(request.approval_id, approved, decided_by)
+                except ValueError:
+                    # Request already decided (timeout race) — no-op.
+                    pass
+                return
+
+    def _format_body(self, request: "ApprovalRequest") -> str:
+        """Format the approval request as a two-block email body string.
+
+        Action block is rendered first; rationale block follows after a divider
+        so the user reads *what* before the agent's *why*.
+        """
+        wide = "=" * 48
+        thin = "-" * 48
+        level_label = ACTION_LEVEL_DESCRIPTIONS.get(request.action_level, "Unknown")
+        rationale_text = (
+            request.rationale if request.rationale is not None else "(no rationale provided)"
+        )
+        lines = [
+            wide,
+            "[APPROVAL REQUIRED]",
+            f"  Action  : {request.operation}",
+            f"  Level   : {request.action_level} — {level_label}",
+            f"  Agent   : {request.requesting_agent}",
+            f"  Session : {request.session_key}",
+            f"  Timeout : {request.timeout_seconds}s",
+            thin,
+            "  Reason (agent's stated rationale):",
+            f"  {rationale_text!r}",
+            wide,
+            "",
+            "Reply with 'approve' or 'deny' in the email body to respond.",
+        ]
+        return "\n".join(lines)
+
+    def _check_inbox_for_reply(self) -> Optional[tuple[bool, str]]:
+        """Check the IMAP inbox for an unseen approve/deny reply.
+
+        Scans all unseen messages in the INBOX.  Only messages from
+        ``sender_allowlist`` are checked.  Marks checked messages as seen.
+
+        Returns:
+            ``(approved, decided_by)`` tuple if a valid decision is found.
+            ``None`` if no decision has been received yet or on any error.
+        """
+        try:
+            mail = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=_IMAP_TIMEOUT)
+            try:
+                mail.login(self._username, self._password)
+                mail.select("INBOX")
+                status, data = mail.search(None, "UNSEEN")
+                if status != "OK" or not data or not data[0]:
+                    return None
+                uids = data[0].split()
+                if not uids:
+                    return None
+                for uid in uids:
+                    status2, msg_data = mail.fetch(uid, "(RFC822)")
+                    if status2 != "OK" or not msg_data:
+                        continue
+                    raw: Optional[bytes] = None
+                    for part in msg_data:
+                        if isinstance(part, tuple):
+                            raw = part[1]
+                            break
+                    if not isinstance(raw, bytes):
+                        continue
+                    msg = message_from_bytes(raw)
+                    raw_from = msg.get("From", "")
+                    _, from_address = parseaddr(raw_from)
+                    from_address = from_address.lower()
+                    # Mark as seen before checking so rejected-sender messages
+                    # are not re-scanned on the next poll.
+                    mail.store(uid, "+FLAGS", r"(\Seen)")
+                    if from_address not in self._sender_allowlist:
+                        continue
+                    body = _extract_text(msg).lower()
+                    if "approve" in body:
+                        return (True, f"email:{from_address}")
+                    if "deny" in body:
+                        return (False, f"email:{from_address}")
+            finally:
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return None

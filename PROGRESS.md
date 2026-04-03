@@ -19,6 +19,22 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-03 — Piece 39.4 Complete ✅
+
+**Branch:** `milestone-39.4-handler-routing` | **PR:** open
+
+Built handler upgrades and multi-channel routing for the Universal Action Approval Framework:
+
+- **`openrattler/channels/slack_adapter.py`** — `SlackApprovalHandler`: posts two-block approval message to Slack (action block first, rationale second, separated by divider), polls `conversations.history` for an approve/deny reply from an allowlisted sender; respects `request.timeout_seconds`; falls back gracefully (manager timeout) on post failure
+- **`openrattler/channels/email_adapter.py`** — `EmailApprovalHandler`: sends two-block email with subject `[APPROVAL REQUIRED] {op} — Level {N}`; polls IMAP for an unseen reply from an allowlisted sender; same two-block format and graceful fallback on SMTP failure; includes note in docstring about 30s timeout being too short for email delivery
+- **`openrattler/security/approval.py`** — `ApprovalHandlerRouter`: dispatches to the preferred channel handler; falls back to `CLIApprovalHandler` if the preferred channel is not configured (never drops an approval request silently)
+- **28 new tests** in `tests/test_security/test_approval.py` (80 total in that file), covering format rendering, action-before-rationale ordering, level labels, approve/deny dispatch, post/send failure fallback, router dispatch, CLI fallback
+- 1873 tests passing (1 skipped), mypy clean, black clean
+
+**Current milestone:** 39.5 — ToolExecutor + Startup Integration (not started)
+
+---
+
 ## /build 2026-04-03 — Piece 39.3 Complete ✅
 
 **Branch:** `milestone-39.3-threshold-policy` | **PR:** open
