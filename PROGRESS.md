@@ -19,6 +19,23 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-03 — Piece 39.1 Complete ✅
+
+**Branch:** `milestone-39.1-action-level-model` | **PR:** open
+
+Built the action level foundation for the Universal Action Approval Framework:
+
+- **`openrattler/security/action_levels.py`** — `ACTION_LEVEL_DESCRIPTIONS` (1=most dangerous, 5=safest), `DEAD_STOP_ACTIONS` frozenset (`force_push_main`, `drop_table`, `rm_workspace_recursive`), `DeadStopError` exception carrying action name
+- **`openrattler/models/tools.py`** — `action_level: int = 5` added to `ToolDefinition` (safest default)
+- **`openrattler/tools/registry.py`** — `@tool` decorator extended with `action_level` parameter
+- **Built-in tool annotations** — all 4 builtin modules annotated: send_email=1, send_sms/send_slack=2, file_write/memory_write/update_*=3, sessions_history=4, file_read/memory_read=5
+- **11 new tests** in `tests/test_security/test_action_levels.py`
+- 1794 tests passing, mypy clean, black clean
+
+**Current milestone:** 39.2 — Enhanced ApprovalRequest + Token System (not started)
+
+---
+
 ## /smoketest 2026-04-03 — ResearchAgent 38.4 Live Test ✅
 
 **Branch:** `fix/smoketest-2026-04-03` | **PR:** see GitHub
