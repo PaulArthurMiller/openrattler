@@ -147,6 +147,7 @@ class ResearchTools:
         # Smoke-test visibility: log the full UM params so we can inspect
         # exactly what the ResearchAgent sends to the calling LLM.
         import json as _json
+
         logger.info(
             "research_query UM [type=%s trace=%s]:\n%s",
             result_msg.type,
