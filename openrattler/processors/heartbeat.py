@@ -304,6 +304,10 @@ class HeartbeatProcessor(ProactiveProcessor):
             # 5. Session is already initialised fresh above (step 4 of the spec).
 
             # 6. Send synthetic heartbeat_trigger event, run agent turn.
+            # Include the current datetime so Corvus has fresh temporal context even
+            # in long-running server instances where the system prompt date was set
+            # at startup.
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             trigger = create_message(
                 from_agent="scheduler:heartbeat",
                 to_agent=session_key,
@@ -312,7 +316,11 @@ class HeartbeatProcessor(ProactiveProcessor):
                 operation="heartbeat_trigger",
                 trust_level="main",
                 params={
-                    "content": "Scheduled heartbeat check-in. Please run your heartbeat tasks now."
+                    "content": (
+                        f"Scheduled heartbeat check-in. "
+                        f"Current date/time: {now_str}. "
+                        "Please run your heartbeat tasks now."
+                    )
                 },
             )
 
