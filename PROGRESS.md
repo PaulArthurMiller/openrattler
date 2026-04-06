@@ -19,6 +19,53 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /smoketest 2026-04-06 — Approval Framework (39.1-39.5) ✅
+
+**Branch:** `fix/smoketest-2026-04-06` | **PR:** open
+
+Tested the Universal Action Approval Framework end-to-end via a real executor
+stack with real file I/O (`smoketest_approval.py`). CLIApprovalHandler._read_input
+patched to simulate y/n non-interactively; all other code paths are real.
+
+**Results:**
+
+| Test | Scenario | Result |
+|---|---|---|
+| 1 | `file_read` (level 5) — auto-approved, no prompt | PASS |
+| 2 | `file_write` (level 3) — prompted, approved, file written | PASS |
+| 3 | `file_write` (level 3) — prompted, denied, file NOT written | PASS |
+
+**Observations:**
+- Approval prompt format correct: Action / Level / Agent / Session / Context / Timeout / Rationale
+- Level description label rendered correctly ("3 — Moderate — modifies local state")
+- Denial error message: `"Tool 'file_write' execution denied by cli:user"` — clear and attributable
+- No prompt appears for level-5 tools under threshold=3 (standard profile)
+
+**Bug found and fixed:**
+- `smoketest_approval.py` test labels used `→` (U+2192) which is not in Windows cp1252.
+  Changed labels to `->`. No production code affected (approval.py uses em-dash `—` which IS in cp1252).
+
+**Tests:** 1880 passing before and after (no regressions)
+
+---
+
+## TODO — Slack Approval Race Condition (investigate before live Slack approval)
+
+`SlackApprovalHandler` and `SlackAdapter` both poll `conversations.history`.
+When a user replies "approve" or "deny" to an approval prompt in Slack:
+1. `SlackAdapter` may pick up the reply and forward it as a new user message to Corvus.
+2. `SlackApprovalHandler` may pick up the same message and treat it as an approval decision.
+
+Both could fire, or only one could fire (causing a missed approval or a confused Corvus turn).
+This is a real race condition and the Slack approval path should **not be trusted in production**
+until this is investigated and resolved. The CLI handler is safe — it doesn't share a polling loop.
+
+Additionally: confirm whether posting the approval *request* message to Slack (via SlackApprovalHandler)
+is itself gated — it should not be, because SlackApprovalHandler calls the Slack API directly,
+not through the `send_slack_message` tool. Verify this in a live run before relying on it.
+
+---
+
 ## /build 2026-04-03 — Piece 39.5 Complete ✅
 
 **Branch:** `milestone-39.5-executor-startup-integration` | **PR:** open
