@@ -19,6 +19,7 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+<<<<<<< fix/smoketest-2026-04-06
 ## /smoketest 2026-04-06 — Approval Framework (39.1-39.5) ✅
 
 **Branch:** `fix/smoketest-2026-04-06` | **PR:** open
@@ -66,6 +67,8 @@ not through the `send_slack_message` tool. Verify this in a live run before rely
 
 ---
 
+=======
+>>>>>>> main
 ## /build 2026-04-03 — Piece 39.5 Complete ✅
 
 **Branch:** `milestone-39.5-executor-startup-integration` | **PR:** open
