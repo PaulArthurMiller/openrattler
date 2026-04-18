@@ -227,7 +227,7 @@ class CLIChat:
         agent_config = _get_agent_config(config)
 
         # Resolve trust-level tool defaults into allowed_tools so permission
-        # checks match what the full server would grant Corvus.
+        # checks match what the full server would grant the assistant.
         from openrattler.startup import _resolve_agent_tools
 
         agent_config = _resolve_agent_tools(agent_config, config.tools)

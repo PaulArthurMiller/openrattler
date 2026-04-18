@@ -353,12 +353,12 @@ Follows: Build Pieces 39.1–39.5 (Universal Action Approval Framework — compl
 
 ## What We're Building
 
-A capability for the personal assistant (Corvus/OpenRattler) to invoke Claude Code
+A capability for the personal assistant to invoke Claude Code
 (CC) as a subprocess and use it for software development tasks — writing code, running
 tests, making commits — while keeping CC's work structurally isolated from the human
 user's files, repos, and personal Claude config.
 
-The integration uses **Option A** (task-level gating): Corvus approves the task
+The integration uses **Option A** (task-level gating): the assistant approves the task
 description before spawning CC, then CC runs non-interactively within a sandboxed
 workspace. A **plan review step** (adapted from Option B) runs CC in read-only mode
 first to produce a plan, which becomes its own approval request before execution
@@ -370,7 +370,7 @@ begins.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│  CORVUS (OpenRattler) — existing system                                │
+│  OPENRATTLER — existing system                                         │
 │                                                                        │
 │  Channel (Slack/Email/CLI)                                             │
 │       │                                                                │
@@ -423,17 +423,17 @@ begins.
                      │
                      ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│  CORVUS WORKSPACE  C:\Users\{assistant_name}\                         │
-│  (default: C:\Users\OpenRattler\, Corvus instance: C:\Users\Corvus\)  │
+│  ASSISTANT WORKSPACE  C:\Users\{assistant_name}\                      │
+│  (default: C:\Users\OpenRattler\ — configured via CCConfig)           │
 │                                                                        │
-│  .claude\                     ← isolated CC config (not PaulA's)      │
+│  .claude\                     ← isolated CC config (not human user's) │
 │  projects\                                                             │
-│  ├── corvus-auth-fix\         ← git repo, corvus/ branches only       │
+│  ├── {prefix}-auth-fix\       ← git repo, {prefix}/ branches only    │
 │  │   ├── .git\                                                         │
-│  │   │   └── config           ← author = Corvus <corvus@local>        │
+│  │   │   └── config           ← author = {git_author_name}            │
 │  │   ├── CLAUDE.md            ← soft fence: per-repo CC rules         │
 │  │   └── [CC's work...]                                                │
-│  └── corvus-new-feature\                                               │
+│  └── {prefix}-new-feature\                                             │
 │                                                                        │
 │  STRUCTURAL FENCES (in order of hardness):                            │
 │  ① --add-dir enforces CC stays in workspace (CC-level, hard)          │
@@ -452,21 +452,21 @@ begins.
 USER (Slack): "Fix the login bug in the auth module"
        │
        ▼
-Corvus formulates task description (with full conversation context)
+The assistant formulates task description (with full conversation context)
        │
        ▼
 [APPROVAL GATE — Level 3]
   Action  : cc_write_task
-  Target  : corvus-auth-fix (new project in workspace)
+  Target  : {prefix}-auth-fix (new project in workspace)
   Level   : 3 — Moderate, modifies local state
   Reason  : "Fix login bug in auth module"
   Approve? [y/N]     ← human approves via configured channel
        │
        ▼
 WorkspaceManager.create_project("auth-fix")
-→ C:\Users\Corvus\projects\corvus-auth-fix\
+→ C:\Users\{assistant_name}\projects\{prefix}-auth-fix\
 → writes CLAUDE.md with workspace rules
-→ inits git repo, sets Corvus author identity, installs pre-push hook
+→ inits git repo, sets assistant author identity, installs pre-push hook
        │
        ▼
 [PLAN PHASE — read-only CC spawn]
@@ -485,16 +485,16 @@ CCPlanReviewer formats:
        ▼
 [EXECUTION PHASE — full CC spawn]
 CC: --allowedTools Read,Write,Bash,Glob,Grep
-CC implements, tests, commits to branch corvus/auth-fix
+CC implements, tests, commits to branch {prefix}/auth-fix
 Output captured as JSON → CCOutputParser
        │
        ▼
 UniversalMessage(type="cc_result", content=summary, metadata={branch, commit, tokens})
-→ Corvus sends to Slack: "Done. Branch corvus/auth-fix is ready for your review."
+→ Assistant sends to Slack: "Done. Branch {prefix}/auth-fix is ready for your review."
 ```
 
 The human user controls what happens next — reviewing the branch and merging
-(or not) is entirely outside Corvus's reach.
+(or not) is entirely outside the assistant's reach.
 
 ---
 
@@ -530,9 +530,9 @@ same 1–5 scale as all other tools.
 | `cc_read_analyze`    | 5     | Read-only CC session: code review, explanation, Q&A  |
 | `cc_write_task`      | 3     | CC writes/modifies files within workspace            |
 | `cc_run_with_shell`  | 2     | CC task that includes shell command execution (Bash) |
-| `cc_git_commit`      | 3     | CC commits staged changes to a corvus/* branch       |
-| `cc_git_push_branch` | 2     | CC pushes a corvus/* branch to remote                |
-| `cc_promote_request` | 1     | Request to merge a corvus/* branch (always level 1)  |
+| `cc_git_commit`      | 3     | CC commits staged changes to an assistant branch     |
+| `cc_git_push_branch` | 2     | CC pushes an assistant branch to remote              |
+| `cc_promote_request` | 1     | Request to merge an assistant branch (always level 1)|
 
 Dead stops — added to `DEAD_STOP_ACTIONS` (compile-time frozenset, no config override):
 
@@ -562,8 +562,8 @@ subprocess boundary.
       workspace_root: str          # absolute path; default C:\Users\{assistant_name}\
       assistant_name: str          # mirrors top-level name; used for default workspace path
       project_prefix: str          # default: first component of assistant_name lowercased ("or")
-      git_author_name: str         # e.g. "Corvus (OpenRattler)"
-      git_author_email: str        # e.g. "corvus@openrattler.local"
+      git_author_name: str         # e.g. "[assistant_name] (OpenRattler)"
+      git_author_email: str        # e.g. "[assistant_name]@openrattler.local"
       max_concurrent_sessions: int = 1
       session_timeout_seconds: int = 300
       plan_review_enabled: bool = True
@@ -781,8 +781,8 @@ confirm CC runs in workspace directory with isolated config.
 - ? Pre-push hook on Windows: git hooks are shell scripts; Windows git (Git for Windows)
   runs them via bash. Test that the hook fires correctly. If not, document the limitation
   and use a post-commit check as fallback.
-- ⚠ If the assistant's Windows user account (`C:\Users\Corvus\`) doesn't exist, workspace
-  creation will fail. Document this as a setup prerequisite. Don't silently create it.
+- ⚠ If the assistant's Windows user account (`C:\Users\{assistant_name}\`) doesn't exist,
+  workspace creation will fail. Document this as a setup prerequisite. Don't silently create it.
 
 **40.2:**
 - ? The cc_* tool `parameters` schemas need to be defined. At minimum:
@@ -851,7 +851,7 @@ if CC's working directory were somehow wrong.
 | minimal   | 1         | auto-approved       | auto-approved     | auto-approved         | requires approval      |
 
 `cc_promote_request` is always level 1 — it requires human approval under every profile.
-This is the "wall" between Corvus's work and the human's main branch.
+This is the "wall" between the assistant's work and the human's main branch.
 
 ---
 
@@ -885,10 +885,10 @@ This is the "wall" between Corvus's work and the human's main branch.
 
 ## Status
 
-Current milestone: **40.2 — not started**  
-Piece 40.1: ✅ complete — PR open  
-Piece 40.2: not started  
+Current milestone: **40.3 — not started**  
+Piece 40.1: ✅ complete — merged  
+Piece 40.2: ✅ complete — PR open  
 Piece 40.3: not started  
 Piece 40.4: not started  
 Piece 40.5: not started  
-Last updated: 2026-04-17
+Last updated: 2026-04-18

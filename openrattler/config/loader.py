@@ -766,7 +766,7 @@ class CCConfig(BaseModel):
         if not p.is_absolute():
             raise ValueError(
                 f"workspace_root must be an absolute path (got '{v}'). "
-                "On Windows this means it must start with a drive letter, e.g. C:\\Users\\Corvus\\."
+                "On Windows this means it must start with a drive letter, e.g. C:\\Users\\[assistant_name}\\."
             )
         return v
 

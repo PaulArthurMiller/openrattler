@@ -869,6 +869,17 @@ async def build_application(
         config=config.outbound_channels,
     ).register_all(registry)
 
+    # 10e. Claude Code tools — registered only when CCConfig.enabled is True.
+    if config.cc.enabled:
+        from openrattler.tools.claude_code.tool import register_cc_tools
+
+        register_cc_tools(registry)
+        logger.info("Claude Code integration enabled; cc_* tools registered.")
+    else:
+        logger.debug(
+            "Claude Code integration disabled (CCConfig.enabled=False); cc_* tools skipped."
+        )
+
     # 10d. GoogleCredentialManager — instantiated only if client_secrets.json exists.
     #      Non-fatal if absent: Google tools will be unavailable but everything else works.
     google_credentials: Optional[GoogleCredentialManager] = None
