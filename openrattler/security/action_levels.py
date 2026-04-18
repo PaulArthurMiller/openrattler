@@ -76,9 +76,16 @@ ACTION_LEVEL_DESCRIPTIONS: dict[int, str] = {
 #: be overridden by any policy setting.
 DEAD_STOP_ACTIONS: frozenset[str] = frozenset(
     {
+        # Core dead stops
         "force_push_main",
         "drop_table",
         "rm_workspace_recursive",
+        # Claude Code integration — CC may never bypass its permission model or
+        # push directly to main.  These are sentinel tool names; if an agent ever
+        # constructs a call to either, the dead-stop check fires before any
+        # subprocess is spawned.
+        "cc_bypass_permissions",
+        "cc_push_main",
     }
 )
 
