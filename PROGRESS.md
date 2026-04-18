@@ -41,7 +41,27 @@ Built the Config + Workspace Foundation for the Claude Code integration layer:
 - **19 new tests** in `tests/test_tools/test_cc_workspace.py` (1 skipped — Windows chmod)
 - 1899 total tests passing, mypy clean, black clean
 
-**Next:** 40.2 — CC Tool Definitions + Dead Stop Extensions
+---
+
+## /build 2026-04-18 — Piece 40.2 Complete ✅
+
+**Branch:** `milestone-40.2-cc-tool-definitions` | **PR:** open
+
+Built CC Tool Definitions + Dead Stop Extensions:
+
+- **`openrattler/security/action_levels.py`** — Extended `DEAD_STOP_ACTIONS` with `cc_bypass_permissions`
+  and `cc_push_main`. These two sentinels prevent CC from ever bypassing its permission model or pushing
+  directly to main — enforced at the code level, no config can override.
+- **`openrattler/tools/claude_code/tool.py`** — Seven `ToolDefinition` instances for all cc_* tools:
+  `cc_read_analyze` (5), `cc_write_task` (3), `cc_run_with_shell` (2), `cc_git_commit` (3),
+  `cc_git_push_branch` (2), `cc_promote_request` (1), `cc_bypass_permissions` (1, sentinel/dead stop).
+  Parameter schemas defined for each. `register_cc_tools(registry)` helper wires all into the registry.
+- **`openrattler/startup.py`** — `register_cc_tools()` called in step 10e, gated on `config.cc.enabled`.
+  Import is lazy (inside the `if` block) so the module is never imported when CC is disabled.
+- **36 new tests** in `tests/test_tools/test_cc_tool_definitions.py`
+- 1935 total tests passing, mypy clean, black clean
+
+**Next:** 40.3 — CCSubprocessManager
 
 ---
 

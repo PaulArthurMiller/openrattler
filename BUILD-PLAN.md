@@ -885,10 +885,10 @@ This is the "wall" between Corvus's work and the human's main branch.
 
 ## Status
 
-Current milestone: **40.2 — not started**  
-Piece 40.1: ✅ complete — PR open  
-Piece 40.2: not started  
+Current milestone: **40.3 — not started**  
+Piece 40.1: ✅ complete — merged  
+Piece 40.2: ✅ complete — PR open  
 Piece 40.3: not started  
 Piece 40.4: not started  
 Piece 40.5: not started  
-Last updated: 2026-04-17
+Last updated: 2026-04-18
