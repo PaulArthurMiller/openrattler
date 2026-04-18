@@ -9,8 +9,8 @@ Action levels follow the same 1–5 scale as all other built-in tools:
     cc_read_analyze     5 — read-only CC session; no file writes
     cc_write_task       3 — CC writes/modifies files within workspace
     cc_run_with_shell   2 — CC task that includes Bash execution
-    cc_git_commit       3 — CC commits staged changes to a corvus/* branch
-    cc_git_push_branch  2 — CC pushes a corvus/* branch to remote
+    cc_git_commit       3 — CC commits staged changes to an assistant branch
+    cc_git_push_branch  2 — CC pushes an assistant branch to remote
     cc_promote_request  1 — Request to merge; always requires human approval
 
 Dead stops (in DEAD_STOP_ACTIONS — no config can override):
@@ -77,7 +77,7 @@ _PUSH_PARAMS: dict[str, Any] = {
         },
         "branch": {
             "type": "string",
-            "description": "Branch to push.  Must be prefixed with 'corvus/' or the configured project prefix.",
+            "description": "Branch to push.  Must use the configured project prefix (e.g. '{prefix}/branch-name').",
         },
     },
     "required": ["project_name", "branch"],
@@ -92,7 +92,7 @@ _PROMOTE_PARAMS: dict[str, Any] = {
         },
         "branch": {
             "type": "string",
-            "description": "Branch to merge (must be a corvus/* branch).",
+            "description": "Branch to merge (must use the configured project prefix, e.g. '{prefix}/branch-name').",
         },
         "target": {
             "type": "string",
@@ -168,14 +168,14 @@ CC_GIT_COMMIT = ToolDefinition(
     description=(
         "Instruct Claude Code to stage all changes in a workspace project and commit "
         "them to the current branch.  The commit author is the configured assistant "
-        "identity (e.g. 'Corvus (OpenRattler)'), not the human user."
+        "identity (from CCConfig.git_author_name), not the human user."
     ),
     parameters=_COMMIT_PARAMS,
     action_level=3,
     trust_level_required=TrustLevel.main,
     security_notes=(
         "Commits are scoped to the workspace project repo.  The pre-push hook prevents "
-        "any subsequent push to main — commits can only be pushed to corvus/* branches."
+        "any subsequent push to main — commits can only be pushed to assistant branches."
     ),
 )
 
@@ -183,15 +183,15 @@ CC_GIT_PUSH_BRANCH = ToolDefinition(
     name="cc_git_push_branch",
     description=(
         "Instruct Claude Code to push a workspace branch to the remote.  Only "
-        "corvus/* branches are permitted; pushing to main is a dead stop.  Requires "
-        "approval under standard and paranoid profiles."
+        "branches using the configured project prefix are permitted; pushing to main "
+        "is a dead stop.  Requires approval under standard and paranoid profiles."
     ),
     parameters=_PUSH_PARAMS,
     action_level=2,
     trust_level_required=TrustLevel.main,
     security_notes=(
         "Branch name is validated before spawn: must start with the configured project "
-        "prefix (e.g. 'corvus/').  The pre-push git hook provides a second layer of "
+        "prefix (CCConfig.project_prefix + '/').  The pre-push git hook provides a second layer of "
         "protection.  'cc_push_main' is a dead stop — this tool cannot push to main."
     ),
 )
@@ -199,7 +199,7 @@ CC_GIT_PUSH_BRANCH = ToolDefinition(
 CC_PROMOTE_REQUEST = ToolDefinition(
     name="cc_promote_request",
     description=(
-        "Request that a corvus/* branch be merged into the target branch (default: main).  "
+        "Request that an assistant branch be merged into the target branch (default: main).  "
         "This tool always requires human approval regardless of the configured security "
         "profile — it is the wall between CC's work and the human's main branch."
     ),

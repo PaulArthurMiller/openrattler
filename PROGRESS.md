@@ -3,8 +3,8 @@
 ## Standing Protocol — Graceful Session Close
 
 At the end of any build or test session where meaningful work has happened, before
-stopping the server, open CLI chat (`openrattler chat`) and ask Corvus to update
-`MEMORY.md` with a session summary. This keeps Corvus's working memory current
+stopping the server, open CLI chat (`openrattler chat`) and ask the assistant to update
+`MEMORY.md` with a session summary. This keeps the assistant's working memory current
 across restarts. The prompt to use:
 
 > "We're wrapping up this session. Please update your MEMORY.md with a summary of
@@ -14,7 +14,7 @@ across restarts. The prompt to use:
 If the server was stopped without a goodbye (it happens), update `~/.openrattler/identity/MEMORY.md`
 manually with the key facts before the next session begins.
 
-Corvus has been instructed to proactively ask Paul for a session summary at natural
+The assistant has been instructed to proactively ask Paul for a session summary at natural
 stopping points — this is now noted in MEMORY.md.
 
 ---

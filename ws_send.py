@@ -82,7 +82,7 @@ async def main(message: str, timeout: int = 120) -> None:
                         print(f"\n[ERROR RESPONSE]\n{json.dumps(data.get('params', {}), indent=2)}")
                     else:
                         content = data.get("params", {}).get("content", "(empty response)")
-                        print(f"\n--- CORVUS RESPONSE ---\n{content}\n--- END RESPONSE ---")
+                        print(f"\n--- ASSISTANT RESPONSE ---\n{content}\n--- END RESPONSE ---")
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     print(f"[ws_send] Connection closed unexpectedly: {msg.type}")
                     sys.exit(1)
