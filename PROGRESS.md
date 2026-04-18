@@ -19,7 +19,32 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
-<<<<<<< fix/smoketest-2026-04-06
+## /build 2026-04-17 — Piece 40.1 Complete ✅
+
+**Branch:** `milestone-40.1-config-workspace-foundation` | **PR:** open
+
+Built the Config + Workspace Foundation for the Claude Code integration layer:
+
+- **`openrattler/config/loader.py`** — `CCConfig` Pydantic model: `enabled` flag (opt-in, default
+  False), `workspace_root` (validated absolute path), `assistant_name`, `project_prefix`,
+  `git_author_name` / `git_author_email`, `max_concurrent_sessions`, `session_timeout_seconds`,
+  `plan_review_enabled` / `plan_review_approval_level` / `plan_review_timeout_seconds` (120s default
+  — longer than standard 30s so user can read the plan), `exec_allowed_tools`, `claude_binary`.
+  Added as `cc: CCConfig` field on `AppConfig`.
+- **`openrattler/tools/claude_code/workspace.py`** — `WorkspaceManager`: `ensure_workspace()` (creates
+  `projects/` and `.claude/` dirs, idempotent), `create_project(name)` (creates prefixed dir, git init
+  with local author config, pre-push hook blocking main/master), `write_project_claude_md()` (renders
+  template), `validate_path()` (symlink-safe containment check), `get_env()` (CLAUDE_CONFIG_DIR + GIT
+  identity vars)
+- **`openrattler/templates/cc_workspace_claude_md.txt`** — Soft fence CLAUDE.md template: path
+  constraint, branch prefix convention, git identity reminder, permission boundary, scope rules
+- **19 new tests** in `tests/test_tools/test_cc_workspace.py` (1 skipped — Windows chmod)
+- 1899 total tests passing, mypy clean, black clean
+
+**Next:** 40.2 — CC Tool Definitions + Dead Stop Extensions
+
+---
+
 ## /smoketest 2026-04-06 — Approval Framework (39.1-39.5) ✅
 
 **Branch:** `fix/smoketest-2026-04-06` | **PR:** open
@@ -67,8 +92,7 @@ not through the `send_slack_message` tool. Verify this in a live run before rely
 
 ---
 
-=======
->>>>>>> main
+
 ## /build 2026-04-03 — Piece 39.5 Complete ✅
 
 **Branch:** `milestone-39.5-executor-startup-integration` | **PR:** open

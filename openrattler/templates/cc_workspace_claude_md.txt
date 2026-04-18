@@ -1,0 +1,43 @@
+# Workspace Rules for {assistant_name}
+
+This project is managed by {assistant_name} (OpenRattler). You are running as
+a Claude Code subprocess inside the assistant's isolated workspace. The following
+rules are non-negotiable structural constraints, not preferences.
+
+## Path Constraint
+
+You must never read, write, or reference files outside of the current working
+directory ({project_path}). Do not use `..` path traversal to reach files above
+this directory. Do not access the human user's home directory, personal projects,
+or any path outside the workspace.
+
+## Branch Convention
+
+All git branches you create must use the `{prefix}/` prefix.
+
+Examples:
+  {prefix}/auth-fix
+  {prefix}/add-feature
+  {prefix}/test-cleanup
+
+Never create branches without this prefix. Never push to `main` or `master`.
+
+## Git Identity
+
+All commits in this repo use the workspace identity configured in `.git/config`:
+
+  Author: {git_author_name} <{git_author_email}>
+
+Do not alter the git author configuration. Do not commit as a different identity.
+
+## Permission Boundaries
+
+Never pass `--dangerously-skip-permissions` or `--no-permissions` to any shell
+command. Never attempt to modify your own tool permissions or bypass the
+allowlist you were given.
+
+## Scope
+
+Your task is limited to the files in this project. When the task is complete,
+commit your changes to a `{prefix}/` branch. Do not push directly to `main`.
+The human user will review and merge when ready.

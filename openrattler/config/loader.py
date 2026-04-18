@@ -650,6 +650,127 @@ class SearchConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# CCConfig
+# ---------------------------------------------------------------------------
+
+
+class CCConfig(BaseModel):
+    """Configuration for the Claude Code integration layer (piece 40.x).
+
+    When ``enabled`` is False, all cc_* tools are unregistered at startup and
+    this config is never consulted further.  This is the safe default so the
+    integration is explicitly opted into.
+
+    Security notes:
+    - ``workspace_root`` must be an absolute path with a drive letter on Windows.
+      A relative path or missing drive letter is rejected at startup, not silently
+      resolved, because ``WorkspaceManager.validate_path`` depends on it being
+      anchored.
+    - ``claude_binary`` defaults to ``"claude"`` (assumes PATH).  Set a full path
+      if CC is not globally accessible to the process user account.
+    - ``exec_allowed_tools`` is the allowlist passed to CC via ``--allowedTools``.
+      Unknown tool names here produce a startup warning (likely a typo); they do
+      not prevent startup.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the Claude Code integration is active.  Opt-in.",
+    )
+    workspace_root: str = Field(
+        default="",
+        description=(
+            "Absolute path to the assistant's workspace directory.  "
+            "Default is C:\\Users\\{assistant_name}\\.  "
+            "Must be an absolute path; relative paths are rejected at startup."
+        ),
+    )
+    assistant_name: str = Field(
+        default="OpenRattler",
+        description=(
+            "Name of the assistant instance.  Used to derive the default "
+            "workspace_root and as the prefix for project directories."
+        ),
+    )
+    project_prefix: str = Field(
+        default="or",
+        description=(
+            "Short prefix applied to all CC project directories.  "
+            "Default is the first component of assistant_name lowercased."
+        ),
+    )
+    git_author_name: str = Field(
+        default="OpenRattler (Claude Code)",
+        description="Git author name written into each workspace repo's local config.",
+    )
+    git_author_email: str = Field(
+        default="openrattler@local",
+        description="Git author email written into each workspace repo's local config.",
+    )
+    max_concurrent_sessions: int = Field(
+        default=1,
+        ge=1,
+        description="Maximum number of CC subprocesses that may run simultaneously.",
+    )
+    session_timeout_seconds: int = Field(
+        default=300,
+        ge=10,
+        description="Seconds before a CC subprocess is killed and the task fails.",
+    )
+    plan_review_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether to run a read-only CC plan phase before execution.  "
+            "If False, CC goes straight to the execution phase without a plan review."
+        ),
+    )
+    plan_review_approval_level: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Action level used for the plan review approval request.",
+    )
+    plan_review_timeout_seconds: int = Field(
+        default=120,
+        ge=10,
+        description=(
+            "Seconds the user has to approve or deny a plan review request.  "
+            "Longer than the default 30s because users need time to read the plan."
+        ),
+    )
+    exec_allowed_tools: list[str] = Field(
+        default_factory=lambda: ["Read", "Write", "Glob", "Grep", "LS", "Bash"],
+        description="CC tool names permitted during the execution phase.",
+    )
+    claude_binary: str = Field(
+        default="claude",
+        description=(
+            "Path to the Claude Code CLI binary.  "
+            "Use a full path if 'claude' is not on PATH for the process user."
+        ),
+    )
+
+    @field_validator("workspace_root")
+    @classmethod
+    def _validate_workspace_root(cls, v: str) -> str:
+        """Reject relative paths and (on Windows) paths without a drive letter.
+
+        An empty string is allowed only when ``enabled`` is False.  The
+        validator cannot access ``enabled`` (Pydantic validators are per-field),
+        so the startup code re-checks this when wiring the integration.
+        """
+        if v == "":
+            return v
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError(
+                f"workspace_root must be an absolute path (got '{v}'). "
+                "On Windows this means it must start with a drive letter, e.g. C:\\Users\\Corvus\\."
+            )
+        return v
+
+
 class AppConfig(BaseModel):
     """Top-level OpenRattler configuration.
 
@@ -726,6 +847,13 @@ class AppConfig(BaseModel):
         description=(
             "Search API configuration. Currently contains Serper settings. "
             "API key is read from SERPER_API_KEY environment variable, not stored here."
+        ),
+    )
+    cc: CCConfig = Field(
+        default_factory=CCConfig,
+        description=(
+            "Claude Code integration configuration (piece 40.x).  "
+            "Disabled by default — set enabled=true to activate."
         ),
     )
 
