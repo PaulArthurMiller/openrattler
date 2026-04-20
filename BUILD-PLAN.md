@@ -885,10 +885,10 @@ This is the "wall" between the assistant's work and the human's main branch.
 
 ## Status
 
-Current milestone: **40.4 — not started**  
+Current milestone: **40.5 — not started**  
 Piece 40.1: ✅ complete — merged  
 Piece 40.2: ✅ complete — merged  
-Piece 40.3: ✅ complete — PR open  
-Piece 40.4: not started  
+Piece 40.3: ✅ complete — merged  
+Piece 40.4: ✅ complete — PR open  
 Piece 40.5: not started  
-Last updated: 2026-04-18
+Last updated: 2026-04-20

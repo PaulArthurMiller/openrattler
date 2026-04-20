@@ -65,7 +65,7 @@ Built CC Tool Definitions + Dead Stop Extensions:
 
 ## /build 2026-04-18 — Piece 40.3 Complete ✅
 
-**Branch:** `milestone-40.3-cc-subprocess-manager` | **PR:** open
+**Branch:** `milestone-40.3-cc-subprocess-manager` | **PR:** merged
 
 Built the CC subprocess management layer:
 
@@ -81,7 +81,29 @@ Built the CC subprocess management layer:
 - **37 new tests** in `tests/test_tools/test_cc_subprocess.py`
 - 1972 total tests passing (3 harmless mock-framework warnings on timeout tests), mypy clean, black clean
 
-**Next:** 40.4 — Plan Review Approval Step
+---
+
+## /build 2026-04-20 — Piece 40.4 Complete ✅
+
+**Branch:** `milestone-40.4-cc-plan-reviewer` | **PR:** open
+
+Built the Plan Review Approval Step for the Claude Code integration layer:
+
+- **`openrattler/tools/claude_code/plan_reviewer.py`** — `CCPlanReviewer` + `PlanReviewResult`:
+  - Spawns CC read-only (`Read`, `Glob`, `Grep`, `LS` — hard-coded, not config-driven) with a
+    plan-phase prompt instructing CC to describe its intended changes without making any.
+  - Parses CC's JSON output via `CCOutputParser`.
+  - Checks `ApprovalThresholdPolicy` — if the plan level doesn't require approval (e.g. minimal
+    profile), auto-approves without prompting the user.
+  - When approval is required, builds an `ApprovalRequest` with the plan text in `context`
+    (action block) and the task in `rationale` (displayed after) — same security ordering as all
+    other approval requests. Routes through the existing 39.x `ApprovalManager`.
+  - `requesting_agent` / `session_key` default to system values but accept overrides from
+    `ClaudeCodeTool` in 40.5 to attach real call-chain context.
+- **23 new tests** in `tests/test_tools/test_cc_plan_reviewer.py`
+- 1995 total tests passing, mypy clean, black clean
+
+**Next:** 40.5 — ClaudeCodeTool Integration + End-to-End
 
 ---
 
