@@ -61,7 +61,27 @@ Built CC Tool Definitions + Dead Stop Extensions:
 - **36 new tests** in `tests/test_tools/test_cc_tool_definitions.py`
 - 1935 total tests passing, mypy clean, black clean
 
-**Next:** 40.3 — CCSubprocessManager
+---
+
+## /build 2026-04-18 — Piece 40.3 Complete ✅
+
+**Branch:** `milestone-40.3-cc-subprocess-manager` | **PR:** open
+
+Built the CC subprocess management layer:
+
+- **`openrattler/tools/claude_code/subprocess_mgr.py`** — `CCSubprocessManager`: builds argv as a
+  `list[str]` (never `shell=True`), validates for forbidden flags before spawn
+  (`_validate_args` raises `DeadStopError("cc_bypass_permissions")` — defense in depth
+  alongside the dead-stop registry), enforces concurrent-session limit, awaits stdout with
+  configurable timeout, kills on timeout, tracks active sessions, `kill_all()` for shutdown.
+  Also `CCResult` dataclass for raw process output.
+- **`openrattler/tools/claude_code/output_parser.py`** — `CCOutputParser.parse()`: deserialises
+  CC's `--output-format json` response; resilient to all optional fields (`cost_usd`,
+  `session_id`, `num_turns`); surfaces CC-level errors via `CCParsedOutput.error`.
+- **37 new tests** in `tests/test_tools/test_cc_subprocess.py`
+- 1972 total tests passing (3 harmless mock-framework warnings on timeout tests), mypy clean, black clean
+
+**Next:** 40.4 — Plan Review Approval Step
 
 ---
 
