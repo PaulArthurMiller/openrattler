@@ -870,11 +870,43 @@ async def build_application(
     ).register_all(registry)
 
     # 10e. Claude Code tools — registered only when CCConfig.enabled is True.
+    #
+    # Instantiation order within the block:
+    #   1. WorkspaceManager — pure filesystem; no async dependencies.
+    #   2. CCSubprocessManager — tracks concurrent sessions; no async init.
+    #   3. CCPlanReviewer — composes subprocess_mgr + approval_manager + policy.
+    #   4. ClaudeCodeTool — composes all three + config; registers handlers.
+    #
+    # approval_manager and policy are created in step 9a above, so they are
+    # available here.
     if config.cc.enabled:
-        from openrattler.tools.claude_code.tool import register_cc_tools
+        from openrattler.tools.claude_code.plan_reviewer import CCPlanReviewer
+        from openrattler.tools.claude_code.subprocess_mgr import CCSubprocessManager
+        from openrattler.tools.claude_code.tool import ClaudeCodeTool, register_cc_tools
+        from openrattler.tools.claude_code.workspace import WorkspaceManager
 
-        register_cc_tools(registry)
-        logger.info("Claude Code integration enabled; cc_* tools registered.")
+        cc_workspace = WorkspaceManager(config.cc)
+        cc_workspace.ensure_workspace()
+
+        cc_subprocess_mgr = CCSubprocessManager(config.cc)
+
+        cc_plan_reviewer = CCPlanReviewer(
+            subprocess_mgr=cc_subprocess_mgr,
+            approval_manager=approval_manager,
+            config=config.cc,
+            policy=policy,
+        )
+
+        register_cc_tools(registry)  # register ToolDefinition entries (no handlers yet)
+        cc_tool = ClaudeCodeTool(
+            workspace=cc_workspace,
+            subprocess_mgr=cc_subprocess_mgr,
+            plan_reviewer=cc_plan_reviewer,
+            config=config.cc,
+        )
+        cc_tool.register_handlers(registry)  # attach async handlers
+
+        logger.info("Claude Code integration enabled; cc_* tools registered with handlers.")
     else:
         logger.debug(
             "Claude Code integration disabled (CCConfig.enabled=False); cc_* tools skipped."
