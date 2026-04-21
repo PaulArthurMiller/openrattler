@@ -533,27 +533,46 @@ class CLIApprovalHandler:
 # ---------------------------------------------------------------------------
 
 
+def _channel_from_session_key(session_key: str) -> str:
+    """Extract the channel name from a session key.
+
+    Session key format: ``agent:<agent_id>:<channel>[:<hash>]``.
+    Examples:
+      ``agent:main:slack:abc123`` → ``"slack"``
+      ``agent:main:email:abc123`` → ``"email"``
+      ``agent:main:main``         → ``"cli"``  (the literal "main" segment = CLI)
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 3:
+        channel = parts[2]
+        return channel if channel != "main" else "cli"
+    return "cli"
+
+
 class ApprovalHandlerRouter:
     """Dispatches approval requests to the appropriate channel handler.
 
     At construction time, the caller provides a ``preferred_channel`` name and
-    a mapping of available handlers.  On each call the router tries the preferred
-    channel first; if that channel is not in the mapping (not configured), it
-    falls back to ``CLIApprovalHandler`` so approval requests are never silently
+    a mapping of available handlers.  On each call the router first tries the
+    channel encoded in the request's ``session_key`` (so an email conversation
+    gets approval prompts via email, a Slack conversation via Slack).  If the
+    originating channel has no handler, it falls back to ``preferred_channel``,
+    then to ``CLIApprovalHandler`` so approval requests are never silently
     dropped.
 
     Conforms to the ``ApprovalHandler`` callable protocol:
     ``async (request: ApprovalRequest, manager: ApprovalManager) -> None``.
 
     Args:
-        preferred_channel: Name of the channel to dispatch to first (e.g.
-                           ``"slack"``, ``"email"``, or ``"cli"``).
+        preferred_channel: Name of the channel to use when the originating
+                           channel has no handler (e.g. ``"slack"`` or ``"cli"``).
         handlers:          Mapping of channel name → handler.  Only channels
                            listed here are available for dispatch.
 
     Security notes:
-    - Falls back to ``CLIApprovalHandler`` if the preferred channel is absent —
-      the router never raises and never silently drops an approval request.
+    - Falls back to ``CLIApprovalHandler`` if neither the originating channel
+      nor the preferred channel is configured — the router never raises and
+      never silently drops an approval request.
     - A compromised config that names a missing channel cannot suppress approvals;
       the CLI fallback always fires.
 
@@ -580,15 +599,19 @@ class ApprovalHandlerRouter:
         self._cli_fallback: ApprovalHandler = CLIApprovalHandler()
 
     async def __call__(self, request: ApprovalRequest, manager: ApprovalManager) -> None:
-        """Dispatch the request to the preferred channel or fall back to CLI.
+        """Dispatch the request to the originating channel, then preferred, then CLI.
 
         Args:
             request: The pending approval request.
             manager: The ``ApprovalManager`` broker; the selected handler must
                      call ``manager.resolve()`` to unblock execution.
         """
-        handler = self._handlers.get(self._preferred_channel)
-        if handler is None:
-            # Preferred channel not configured — fall back to CLI.
-            handler = self._cli_fallback
+        # Route to the channel the session originated from so the user receives
+        # the approval prompt on the same channel they sent the message on.
+        originating = _channel_from_session_key(request.session_key)
+        handler = (
+            self._handlers.get(originating)
+            or self._handlers.get(self._preferred_channel)
+            or self._cli_fallback
+        )
         await handler(request, manager)

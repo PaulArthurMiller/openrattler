@@ -453,7 +453,32 @@ class ApplicationContext:
         except asyncio.CancelledError:
             pass
         finally:
+            await self._prompt_memory_update_on_shutdown()
             await self.stop()
+
+    async def _prompt_memory_update_on_shutdown(self) -> None:
+        """Send a shutdown prompt asking Corvus to update memory before the app stops."""
+        try:
+            session = await self._get_or_create_session(_MAIN_SESSION_KEY)
+            msg = create_message(
+                from_agent="system:shutdown",
+                to_agent=self._runtime._config.agent_id,
+                session_key=_MAIN_SESSION_KEY,
+                type="request",
+                operation="user_message",
+                trust_level="main",
+                channel="cli",
+                params={
+                    "content": (
+                        "The server is shutting down. Please update your memory (MEMORY.md)"
+                        " and heartbeat with any important notes from this session, then"
+                        " confirm you are ready to close."
+                    )
+                },
+            )
+            await self._runtime.process_message(session, msg)
+        except Exception:
+            logger.exception("ApplicationContext: shutdown memory prompt failed")
 
     # ------------------------------------------------------------------
     # Session management

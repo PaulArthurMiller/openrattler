@@ -91,6 +91,7 @@ _DEFAULT_AGENT_CONFIG = AgentConfig(
 _HELP_TEXT = """\
 Available commands:
   /quit, /exit       — end the session
+  /shutdown          — ask Corvus to update memory then exit
   /session           — show current session key
   /history [n]       — show last N messages (default 10)
   /audit [n]         — show last N audit events (default 5)
@@ -400,6 +401,19 @@ class CLIChat:
         name = parts[0].lower()
 
         if name in ("/quit", "/exit"):
+            print("Goodbye!")
+            return "quit"
+
+        if name == "/shutdown":
+            print("Asking Corvus to update memory before shutdown...")
+            if self._runtime and self._session:
+                shutdown_msg = self._adapter.text_to_message(
+                    "This session is ending. Please update your memory (MEMORY.md) and"
+                    " heartbeat with any important notes from our conversation, then"
+                    " confirm you are ready to close."
+                )
+                response = await self._runtime.process_message(self._session, shutdown_msg)
+                print(f"\n{self._adapter._format_response(response)}\n")
             print("Goodbye!")
             return "quit"
 
