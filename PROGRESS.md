@@ -107,6 +107,33 @@ Built the Plan Review Approval Step for the Claude Code integration layer:
 
 ---
 
+## /build 2026-04-21 — Piece 40.5 Complete ✅
+
+**Branch:** `milestone-40.5-cc-tool-integration` | **PR:** open
+
+Wired all Claude Code components into callable tool handlers and updated startup.py:
+
+- **`openrattler/tools/claude_code/tool.py`** — `ClaudeCodeTool` class added:
+  - `execute_write_task(task, project_name)` — plan review gate + exec_allowed_tools spawn.
+  - `execute_read_analyze(task, project_name)` — no plan review, read-only tools (Read, Glob, Grep, LS).
+  - `execute_run_with_shell(task, project_name)` — plan review gate + exec_allowed_tools (includes Bash).
+  - `execute_git_commit(project_name, message)` — system-constructed task for git add + commit.
+  - `execute_git_push_branch(project_name, branch)` — validates branch prefix before spawn.
+  - `execute_promote_request(project_name, branch, target)` — signals merge intent; no subprocess.
+  - `register_handlers(registry)` — attaches all handlers after `register_cc_tools()` sets up definitions.
+  - `_build_result(cc_result, project_path)` — parses CC JSON output; raises RuntimeError on any error.
+  - `register_cc_tools()` docstring updated to document handler-registration ordering.
+- **`openrattler/startup.py`** — step 10e expanded:
+  - Instantiates `WorkspaceManager`, `CCSubprocessManager`, `CCPlanReviewer`, `ClaudeCodeTool`.
+  - Calls `register_cc_tools()` then `cc_tool.register_handlers()` in the right order.
+  - All imports are lazy (inside the `if config.cc.enabled:` block).
+- **29 new tests** in `tests/test_tools/test_cc_integration.py`
+- 2024 total tests passing, mypy clean, black clean
+
+**Next:** 40.x series complete — all milestones merged. Consider smoke testing the full CC integration end-to-end.
+
+---
+
 ## /smoketest 2026-04-06 — Approval Framework (39.1-39.5) ✅
 
 **Branch:** `fix/smoketest-2026-04-06` | **PR:** open
