@@ -340,7 +340,11 @@ class AgentRuntime:
 
         for msg in session.history:
             if msg.type == "request":
-                messages.append({"role": "user", "content": msg.params.get("content", "")})
+                content = msg.params.get("content", "")
+                # Prefix with originating channel so the agent knows how to format its reply.
+                if msg.channel:
+                    content = f"[Channel: {msg.channel}]\n{content}"
+                messages.append({"role": "user", "content": content})
             elif msg.type == "response":
                 messages.append({"role": "assistant", "content": msg.params.get("content", "")})
             # Other types (error, event) are not forwarded to the LLM.
