@@ -19,6 +19,51 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /smoketest 2026-04-21 — Claude Code Integration (40.1-40.5) ✅
+
+**Branch:** `fix/smoketest-2026-04-21` | **PR:** open
+
+Smoke-tested the full Claude Code integration layer end-to-end with real CC subprocess invocations.
+
+**Config change required** (not in repo): add a `"cc"` section to `~/.openrattler/config.json`:
+- `"enabled": true`, `"workspace_root"` (absolute path), `"claude_binary"` (full path to claude.exe),
+- `"project_prefix": "corvus"`, git author identity, tool allowlist.
+- Add all `cc_*` tools to `tools.trust_defaults.main` list.
+
+**Results:**
+
+| Test | Scenario | Result |
+|---|---|---|
+| 1a | WorkspaceManager creates `projects/` and `.claude/` dirs | PASS |
+| 1b | `create_project` creates git repo + CLAUDE.md | PASS |
+| 2 | `cc_read_analyze` — real CC subprocess, level-5 auto-approved, returns analysis | PASS |
+| 3 | `cc_write_task` — real CC subprocess, plan review auto-approved, file created | PASS |
+| 4 | `cc_bypass_permissions` — dead stop fires, execution blocked | PASS |
+| 5 | `cc_git_push_branch` bad prefix — blocked (approval timeout on bad branch) | PASS |
+
+**Observations from real CC runs:**
+- `cc_read_analyze`: CC correctly read README.md and described the project purpose. `cost_usd` was None
+  in the response (CC CLI may not include it in all modes).
+- `cc_write_task`: Plan review phase showed a proper Markdown plan table (files to create, context,
+  reasoning). CC then wrote `hello.txt` with exact requested content.
+- Plan review fires twice in the write path: once from `CCPlanReviewer` (plan gate) and once from
+  `ToolExecutor` for the level-3 gate on `cc_write_task`. Both auto-approved correctly.
+- Dead stop error message: `"Action 'cc_bypass_permissions' is a dead-stop action and may never execute."`
+  — correct and clear.
+
+**No production bugs found.** Two smoketest script bugs fixed before final run:
+- `None` cost_usd caused `f"{cost:.6f}"` format error — fixed to handle None.
+- `ApprovalResult` constructor required `approval_id`, `decided_by`, `timestamp` — fixed patch to
+  pass all required fields including the approval token from the request.
+
+**Startup validation (separate check):**
+- Server started with `cc.enabled=True` logs: `"WorkspaceManager: workspace ready"` and
+  `"Claude Code integration enabled; cc_* tools registered with handlers."` ✅
+
+**Tests:** 2024 passing before and after (no regressions)
+
+---
+
 ## /build 2026-04-17 — Piece 40.1 Complete ✅
 
 **Branch:** `milestone-40.1-config-workspace-foundation` | **PR:** open
