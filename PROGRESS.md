@@ -19,6 +19,36 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.5 Complete ✅
+
+**Branch:** `milestone-41.5-gmail-tools` | **PR:** open
+
+Built the Gmail tool layer — nine ToolDefinition entries plus GmailToolHandler:
+
+- **`openrattler/tools/builtin/gmail_tools.py`** — `GmailToolHandler` with:
+  - `handle_list_threads(query, max_results)` — lists threads; optional query filter;
+    returns UM with `params["threads"]`; `trust_level="local"`
+  - `handle_read_thread(thread_id)` — fetches thread with `format="full"`; walks MIME
+    tree to prefer `text/plain` over `text/html`; base64url-decodes body; passes through
+    `GoogleContentSanitizer`; returns UM with separate `params["subject"]`, `params["from"]`,
+    `params["date"]` (NOT in body to prevent header injection); `trust_level="public"`
+  - `handle_star_message(message_id, starred)` — adds/removes `STARRED` label; audit logged
+  - `handle_mark_important(message_id, important)` — adds/removes `IMPORTANT` label; audit logged
+  - `handle_apply_label(thread_id, label_id)` — adds label to thread; audit logged
+  - `handle_remove_label(thread_id, label_id)` — removes label from thread; audit logged
+  - `handle_create_label(name, ...)` — creates new mailbox label; audit logged; `trust_level="local"`
+  - `handle_archive(thread_id)` — removes `INBOX` label; fetches subject first for audit record;
+    `trust_level="local"`; requires approval (action_level=2)
+  - `handle_list_labels()` — lists all labels; `trust_level="local"`
+  - `register_gmail_tools(registry, handler)` — wired into `startup.py` under
+    `config.google.enabled` guard (alongside Calendar and Drive tools)
+- **`openrattler/startup.py`** — updated to instantiate `GmailToolHandler` and call
+  `register_gmail_tools`
+- **76 new tests** in `tests/test_tools/test_gmail_tools.py`
+- 2211 total tests passing (2 skipped), mypy clean, black clean
+
+---
+
 ## /build 2026-04-24 — Piece 41.4 Complete ✅
 
 **Branch:** `milestone-41.4-google-drive-tools` | **PR:** open

@@ -974,6 +974,10 @@ async def build_application(
             DriveToolHandler,
             register_drive_tools,
         )
+        from openrattler.tools.builtin.gmail_tools import (
+            GmailToolHandler,
+            register_gmail_tools,
+        )
 
         google_auth_manager = GoogleAuthManager(config.google)
         google_client_factory = GoogleClientFactory(google_auth_manager)
@@ -991,7 +995,16 @@ async def build_application(
             audit=audit,
         )
         register_drive_tools(registry, drive_handler)
-        logger.info("Google Workspace integration enabled; Calendar and Drive tools registered.")
+        gmail_handler = GmailToolHandler(
+            client=google_client_factory,
+            sanitizer=google_sanitizer,
+            config=config.google,
+            audit=audit,
+        )
+        register_gmail_tools(registry, gmail_handler)
+        logger.info(
+            "Google Workspace integration enabled; Calendar, Drive, and Gmail tools registered."
+        )
     else:
         logger.debug(
             "Google Workspace integration disabled (GoogleConfig.enabled=False); "
