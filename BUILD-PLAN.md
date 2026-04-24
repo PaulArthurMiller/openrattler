@@ -1552,9 +1552,15 @@ completion state is routine enough that it should not interrupt the user.
 
 ## Status
 
+<<<<<<< milestone-41.2-google-content-sanitizer
+Current milestone: **41.3 — not started**
+Piece 41.1: ✅ complete — PR open
+Piece 41.2: ✅ complete — PR open
+=======
 Current milestone: **41.2 — not started**
 Piece 41.1: ✅ complete — PR open
 Piece 41.2: ⬜ not started
+>>>>>>> main
 Piece 41.3: ⬜ not started
 Piece 41.4: ⬜ not started
 Piece 41.5: ⬜ not started
