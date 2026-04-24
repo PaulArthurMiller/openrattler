@@ -19,6 +19,30 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.3 Complete ✅
+
+**Branch:** `milestone-41.3-google-calendar-tools` | **PR:** open
+
+Built the Google Calendar tool layer — three ToolDefinition entries plus CalendarToolHandler:
+
+- **`openrattler/tools/builtin/calendar_tools.py`** — `CalendarToolHandler` with:
+  - `handle_list_events(time_min, time_max, calendar_id, max_results)` — lists events;
+    `max_results` capped by `GoogleConfig.max_events_per_query`; returns UM with `params["events"]`
+  - `handle_read_event(event_id, calendar_id)` — fetches a single event by ID;
+    returns UM with `params["event"]`
+  - `handle_create_event(summary, start, end, description, location, calendar_id)` — creates event;
+    appends `[Created by OpenRattler]` attribution to description before API call;
+    returns UM with `params["event_id"]`; audit logs `calendar_event_created` on success
+  - All results: `ToolResult(success=True, result=UniversalMessage)`, `trust_level="local"`,
+    `trace_id` propagated from call
+  - All errors: `ToolResult(success=False, error=str(exc))`
+  - `register_calendar_tools(registry, handler)` — wired into `startup.py` under
+    `config.google.enabled` guard
+- **29 new tests** in `tests/test_tools/test_calendar_tools.py`
+- 2088 total tests passing (2 skipped), mypy clean, black clean
+
+---
+
 ## /build 2026-04-24 — Piece 41.2 Complete ✅
 
 **Branch:** `milestone-41.2-google-content-sanitizer` | **PR:** open
