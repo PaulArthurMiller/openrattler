@@ -957,6 +957,34 @@ async def build_application(
             "client_secrets.json not found at %s; Google tools will be unavailable.", client_secrets
         )
 
+    # 10e. Google Workspace tools (41.x) — registered only when config.google.enabled is True.
+    #      Requires the GoogleAuthManager + GoogleClientFactory stack from the 41.x layer.
+    if config.google.enabled:
+        from openrattler.integrations.google.auth import GoogleAuthManager
+        from openrattler.integrations.google.client import GoogleClientFactory
+        from openrattler.storage.audit import (
+            AuditLog as _AuditLog,
+        )  # noqa: F401 (already imported above)
+        from openrattler.tools.builtin.calendar_tools import (
+            CalendarToolHandler,
+            register_calendar_tools,
+        )
+
+        google_auth_manager = GoogleAuthManager(config.google)
+        google_client_factory = GoogleClientFactory(google_auth_manager)
+        calendar_handler = CalendarToolHandler(
+            client=google_client_factory,
+            config=config.google,
+            audit=audit,
+        )
+        register_calendar_tools(registry, calendar_handler)
+        logger.info("Google Workspace integration enabled; Calendar tools registered.")
+    else:
+        logger.debug(
+            "Google Workspace integration disabled (GoogleConfig.enabled=False); "
+            "Calendar tools skipped."
+        )
+
     return ApplicationContext(
         config=config,
         audit=audit,
