@@ -771,6 +771,118 @@ class CCConfig(BaseModel):
         return v
 
 
+# ---------------------------------------------------------------------------
+# GoogleConfig
+# ---------------------------------------------------------------------------
+
+#: OAuth 2.0 scopes for the 41.x Google Workspace integration.
+_GOOGLE_WORKSPACE_SCOPES: list[str] = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+
+
+class GoogleConfig(BaseModel):
+    """Configuration for the 41.x Google Workspace integration layer.
+
+    One ``GoogleConfig`` section covers all four Google APIs (Calendar, Drive,
+    Gmail, Tasks).  The ``credentials_file`` and ``token_file`` paths default
+    to ``~/.openrattler/google/`` so they do not interfere with the existing
+    ``google_auth`` section which uses the workspace-relative ``auth/`` path.
+
+    Security notes:
+    - ``credentials_file`` identifies the app to Google but does not grant
+      access; keep it out of public repositories.
+    - ``token_file`` stores OAuth 2.0 tokens — treat it like a password.
+      Add ``~/.openrattler/google/token.json`` to ``.gitignore``.
+    - When ``enabled=True``, ``credentials_file`` must exist on disk; the
+      validator raises ``ValueError`` so misconfiguration is caught at startup.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the Google Workspace integration is active.  Opt-in.",
+    )
+    credentials_file: str = Field(
+        default=str(Path.home() / ".openrattler" / "google" / "credentials.json"),
+        description=(
+            "Path to the OAuth 2.0 client credentials JSON file downloaded from "
+            "Google Cloud Console.  Must exist before running 'openrattler google-auth'."
+        ),
+    )
+    token_file: str = Field(
+        default=str(Path.home() / ".openrattler" / "google" / "token.json"),
+        description=(
+            "Path where the OAuth 2.0 token is stored after the auth flow.  "
+            "Treat like a password and add to .gitignore."
+        ),
+    )
+    user_email: str = Field(
+        default="",
+        description="Primary Google account email address for this integration.",
+    )
+    calendar_id: str = Field(
+        default="primary",
+        description=(
+            "Google Calendar ID to use.  'primary' resolves to the signed-in user's "
+            "main calendar.  All calendar tools accept a calendar_id parameter to "
+            "override this per-call."
+        ),
+    )
+    task_list_id: str = Field(
+        default="@default",
+        description=(
+            "'@default' resolves to the signed-in user's primary task list.  "
+            "Use tasks_list_tasklists to discover other task list IDs."
+        ),
+    )
+    drive_upload_folder_id: Optional[str] = Field(
+        default=None,
+        description="Drive folder ID for default upload location.  None = Drive root.",
+    )
+    max_email_chars: int = Field(
+        default=10000,
+        ge=1,
+        description="Email body truncation limit in characters.",
+    )
+    max_file_chars: int = Field(
+        default=20000,
+        ge=1,
+        description="Drive file content truncation limit in characters.",
+    )
+    max_threads_per_query: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum Gmail threads returned per list query.",
+    )
+    max_events_per_query: int = Field(
+        default=50,
+        ge=1,
+        description="Maximum Calendar events returned per list query.",
+    )
+    max_tasks_per_query: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum Tasks items returned per list query.",
+    )
+    max_file_bytes: int = Field(
+        default=5_000_000,
+        ge=1,
+        description=(
+            "Maximum Drive file size in bytes before refusing to read content.  "
+            "Checked against file metadata before downloading."
+        ),
+    )
+
+    @field_validator("credentials_file")
+    @classmethod
+    def _validate_credentials_file(cls, v: str) -> str:
+        """Accept any path at model creation time; existence is checked at startup."""
+        return v
+
+
 class AppConfig(BaseModel):
     """Top-level OpenRattler configuration.
 
@@ -854,6 +966,14 @@ class AppConfig(BaseModel):
         description=(
             "Claude Code integration configuration (piece 40.x).  "
             "Disabled by default — set enabled=true to activate."
+        ),
+    )
+    google: GoogleConfig = Field(
+        default_factory=GoogleConfig,
+        description=(
+            "Google Workspace integration configuration (piece 41.x).  "
+            "Disabled by default — set enabled=true to activate.  "
+            "Covers Calendar, Drive, Gmail, and Tasks."
         ),
     )
 

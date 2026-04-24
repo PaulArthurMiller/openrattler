@@ -209,6 +209,57 @@ def _cmd_auth_google(args: argparse.Namespace) -> None:
     asyncio.run(_cmd_auth_google_async(args))
 
 
+async def _cmd_google_auth_async(args: argparse.Namespace) -> None:
+    """Run the Google OAuth flow using the 41.x GoogleAuthManager."""
+    from openrattler.integrations.google.auth import GoogleAuthError, GoogleAuthManager
+
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    config = __import__("openrattler.config.loader", fromlist=["load_config"]).load_config(
+        config_path
+    )
+
+    google_cfg = config.google
+    if not google_cfg.enabled:
+        print(
+            "Google integration is disabled in config (google.enabled = false).\n"
+            "Set google.enabled = true and configure google.credentials_file, then retry."
+        )
+        sys.exit(1)
+
+    import pathlib
+
+    creds_path = pathlib.Path(google_cfg.credentials_file)
+    if not creds_path.exists():
+        print(
+            f"Error: credentials.json not found at {creds_path}.\n"
+            "Download it from Google Cloud Console → APIs & Services → Credentials\n"
+            "and place it at that path, then retry."
+        )
+        sys.exit(1)
+
+    manager = GoogleAuthManager(google_cfg)
+
+    if manager.is_authenticated() and not getattr(args, "reauthorize", False):
+        print(
+            f"Already authorized.  Token stored at: {google_cfg.token_file}\n"
+            "Use --reauthorize to force a new consent flow."
+        )
+        return
+
+    print("Opening browser for Google OAuth consent…")
+    try:
+        await manager.run_auth_flow()
+    except GoogleAuthError as exc:
+        print(f"Authorization failed: {exc}")
+        sys.exit(1)
+
+    print(f"Authorization complete.  Token saved at: {google_cfg.token_file}")
+
+
+def _cmd_google_auth(args: argparse.Namespace) -> None:
+    asyncio.run(_cmd_google_auth_async(args))
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -281,6 +332,24 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_sub.required = True
     sessions_sub.add_parser("list", help="list all session keys")
 
+    # google-auth (41.x integration)
+    google_auth_parser = subparsers.add_parser(
+        "google-auth",
+        help="authorize Google Workspace APIs (Calendar, Drive, Gmail, Tasks) via OAuth 2.0",
+    )
+    google_auth_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help=f"config file path (default: {DEFAULT_CONFIG_PATH})",
+    )
+    google_auth_parser.add_argument(
+        "--reauthorize",
+        action="store_true",
+        default=False,
+        help="force a new consent flow even if already authorized",
+    )
+
     # auth
     auth_parser = subparsers.add_parser(
         "auth",
@@ -327,6 +396,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "sessions":
         if args.sessions_command == "list":
             _cmd_sessions_list(args)
+    elif args.command == "google-auth":
+        _cmd_google_auth(args)
     elif args.command == "auth":
         if args.auth_command == "google":
             _cmd_auth_google(args)

@@ -19,6 +19,31 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.1 Complete ✅
+
+**Branch:** `milestone-41.1-google-auth-foundation` | **PR:** open
+
+Built the GoogleConfig + Auth Foundation for the Google Workspace integration layer:
+
+- **`openrattler/config/loader.py`** — `GoogleConfig` Pydantic model added: `enabled` flag (opt-in,
+  default False), `credentials_file` / `token_file` (default to `~/.openrattler/google/`),
+  `user_email`, `calendar_id` (default "primary"), `task_list_id` (default "@default"),
+  `drive_upload_folder_id` (Optional, default None), `max_email_chars` (10000),
+  `max_file_chars` (20000), `max_threads_per_query` (20), `max_events_per_query` (50),
+  `max_tasks_per_query` (100), `max_file_bytes` (5MB). Added as `google: GoogleConfig` on `AppConfig`.
+- **`openrattler/integrations/google/__init__.py`** — new integrations package
+- **`openrattler/integrations/google/auth.py`** — `GoogleAuthManager`: wraps existing
+  `GoogleCredentialManager` (Fernet-encrypted storage); `is_authenticated()`, `get_credentials()`,
+  `run_auth_flow()`; raises `GoogleAuthError` when not authenticated
+- **`openrattler/integrations/google/client.py`** — `GoogleClientFactory`: four lazily-cached
+  service accessors (`calendar_service`, `drive_service`, `gmail_service`, `tasks_service`)
+- **`openrattler/cli/main.py`** — added `openrattler google-auth` command using new `GoogleAuthManager`
+- **`pyproject.toml`** — added `google-auth-httplib2>=0.2.0` explicit dependency
+- **14 new tests** in `tests/test_integrations/test_google_auth.py`
+- 2038 total tests passing (2 skipped), mypy clean, black clean
+
+---
+
 ## /smoketest 2026-04-21 — Claude Code Integration (40.1-40.5) ✅
 
 **Branch:** `fix/smoketest-2026-04-21` | **PR:** open
