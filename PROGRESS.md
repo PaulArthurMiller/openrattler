@@ -19,6 +19,35 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.6 Complete ✅
+
+**Branch:** `milestone-41.6-tasks-tools` | **PR:** open
+
+Built the Google Tasks tool layer — five ToolDefinition entries plus TasksToolHandler:
+
+- **`openrattler/tools/builtin/tasks_tools.py`** — `TasksToolHandler` with:
+  - `handle_list_tasklists()` — lists all task lists; returns UM with `params["tasklists"]`;
+    `trust_level="local"`
+  - `handle_list_tasks(tasklist_id, show_completed, show_hidden, max_results)` — lists tasks;
+    `max_results` capped by `GoogleConfig.max_tasks_per_query`; task `notes` sanitized via
+    `GoogleContentSanitizer`; returns UM with `params["tasks"]`; `trust_level="local"`
+  - `handle_read_task(task_id, tasklist_id)` — fetches full task; `notes` sanitized;
+    returns UM with `params["task"]`; `trust_level="local"`
+  - `handle_create_task(title, notes, due, tasklist_id, parent)` — creates task; appends
+    `" [OpenRattler]"` suffix to title for identification; optional subtask via `parent`;
+    audit logs `tasks_task_created` on success; `trust_level="local"`
+  - `handle_complete_task(task_id, tasklist_id, completed)` — patches task status to
+    `"completed"` or `"needsAction"`; clears `completed` timestamp when un-completing per API
+    requirement; audit logs `tasks_task_completed`; `trust_level="local"`
+  - `register_tasks_tools(registry, handler)` — wired into `startup.py` under
+    `config.google.enabled` guard (alongside Calendar, Drive, and Gmail tools)
+- **`openrattler/startup.py`** — updated to instantiate `TasksToolHandler` and call
+  `register_tasks_tools`
+- **55 new tests** in `tests/test_tools/test_tasks_tools.py`
+- 2266 total tests passing (2 skipped), mypy clean, black clean
+
+---
+
 ## /build 2026-04-24 — Piece 41.5 Complete ✅
 
 **Branch:** `milestone-41.5-gmail-tools` | **PR:** open
