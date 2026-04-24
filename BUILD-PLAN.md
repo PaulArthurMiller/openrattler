@@ -1552,11 +1552,11 @@ completion state is routine enough that it should not interrupt the user.
 
 ## Status
 
-Current milestone: **41.4 — not started**
+Current milestone: **41.5 — not started**
 Piece 41.1: ✅ complete — PR open
 Piece 41.2: ✅ complete — PR open
 Piece 41.3: ✅ complete — PR open
-Piece 41.4: ⬜ not started
+Piece 41.4: ✅ complete — PR open
 Piece 41.5: ⬜ not started
 Piece 41.6: ⬜ not started
 Last updated: 2026-04-24

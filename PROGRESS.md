@@ -19,6 +19,38 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.4 Complete ✅
+
+**Branch:** `milestone-41.4-google-drive-tools` | **PR:** open
+
+Built the Google Drive tool layer — five ToolDefinition entries plus DriveToolHandler:
+
+- **`openrattler/tools/builtin/drive_tools.py`** — `DriveToolHandler` with:
+  - `handle_list_files(query, folder_id, max_results, mime_type)` — queries Drive files;
+    builds Drive query string from optional filters; returns UM with `params["files"]`;
+    `trust_level="local"`
+  - `handle_list_folders(parent_id, max_results)` — lists folders; always adds
+    `mimeType = 'application/vnd.google-apps.folder'` to query; returns UM with
+    `params["folders"]`; `trust_level="local"`
+  - `handle_read_file(file_id)` — fetches metadata first (size/MIME check); refuses binary
+    MIME types with clear error; refuses files exceeding `max_file_bytes`; exports Google
+    Docs via Drive export API (`text/plain`); downloads other text/* files directly; passes
+    all content through `GoogleContentSanitizer`; returns UM with `trust_level="public"`
+  - `handle_create_folder(name, parent_id)` — creates folder with `appProperties` attribution;
+    audit logs `drive_folder_created`; returns UM with `params["folder_id"]`;
+    `trust_level="local"`
+  - `handle_upload_file(name, content, mime_type, folder_id)` — uploads text content with
+    `MediaIoBaseUpload`; sets `appProperties` attribution; returns UM with `params["file_id"]`;
+    `trust_level="local"`
+  - `register_drive_tools(registry, handler)` — wired into `startup.py` under
+    `config.google.enabled` guard (alongside calendar tools)
+- **`openrattler/startup.py`** — updated to also instantiate `GoogleContentSanitizer` and
+  `DriveToolHandler`, and call `register_drive_tools`
+- **47 new tests** in `tests/test_tools/test_drive_tools.py`
+- 2135 total tests passing (2 skipped), mypy clean, black clean
+
+---
+
 ## /build 2026-04-24 — Piece 41.3 Complete ✅
 
 **Branch:** `milestone-41.3-google-calendar-tools` | **PR:** open

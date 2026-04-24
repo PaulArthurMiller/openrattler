@@ -962,6 +962,7 @@ async def build_application(
     if config.google.enabled:
         from openrattler.integrations.google.auth import GoogleAuthManager
         from openrattler.integrations.google.client import GoogleClientFactory
+        from openrattler.integrations.google.sanitizer import GoogleContentSanitizer
         from openrattler.storage.audit import (
             AuditLog as _AuditLog,
         )  # noqa: F401 (already imported above)
@@ -969,20 +970,32 @@ async def build_application(
             CalendarToolHandler,
             register_calendar_tools,
         )
+        from openrattler.tools.builtin.drive_tools import (
+            DriveToolHandler,
+            register_drive_tools,
+        )
 
         google_auth_manager = GoogleAuthManager(config.google)
         google_client_factory = GoogleClientFactory(google_auth_manager)
+        google_sanitizer = GoogleContentSanitizer(config=config.google, audit=audit)
         calendar_handler = CalendarToolHandler(
             client=google_client_factory,
             config=config.google,
             audit=audit,
         )
         register_calendar_tools(registry, calendar_handler)
-        logger.info("Google Workspace integration enabled; Calendar tools registered.")
+        drive_handler = DriveToolHandler(
+            client=google_client_factory,
+            sanitizer=google_sanitizer,
+            config=config.google,
+            audit=audit,
+        )
+        register_drive_tools(registry, drive_handler)
+        logger.info("Google Workspace integration enabled; Calendar and Drive tools registered.")
     else:
         logger.debug(
             "Google Workspace integration disabled (GoogleConfig.enabled=False); "
-            "Calendar tools skipped."
+            "Calendar and Drive tools skipped."
         )
 
     return ApplicationContext(
