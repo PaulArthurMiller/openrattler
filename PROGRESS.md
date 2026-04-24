@@ -19,6 +19,33 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-04-24 — Piece 41.2 Complete ✅
+
+**Branch:** `milestone-41.2-google-content-sanitizer` | **PR:** open
+
+Built the GoogleContentSanitizer — the security gate all external Google content
+must pass through before reaching the agent context.
+
+- **`openrattler/integrations/google/sanitizer.py`** — `GoogleContentSanitizer` with:
+  - `_HTMLStripper` — stdlib `html.parser` subclass; skips `<script>`, `<style>`, `<head>`
+    content entirely; decodes HTML entities via `html.unescape()`
+  - `SanitizedContent` dataclass — `text`, `was_truncated`, `security_flags`, `original_length`
+  - `sanitize_email_body(raw, mime_type)` — strips HTML if needed, truncates at `max_email_chars`,
+    scans via `scan_for_suspicious_content()`
+  - `sanitize_file_content(raw, mime_type)` — same pipeline, `max_file_chars` limit
+  - `wrap_for_agent(content, label)` — wraps text in `[LABEL]...[/LABEL]` block; prepends
+    `[SECURITY WARNING]` when flags present; appends truncation note when truncated
+  - Fires `security_content_flagged` audit event on every detection
+- **21 new tests** in `tests/test_integrations/test_google_sanitizer.py`
+- 2059 total tests passing (2 skipped), mypy clean, black clean
+
+**Design note:** One deviation from the plan — the HTML stripper skips content inside
+`<script>`, `<style>`, and `<head>` tags (not just strips the tags) to avoid leaking
+executable code fragments into the plain-text output. The test for script tag removal
+was added to cover this behavior.
+
+---
+
 ## /build 2026-04-24 — Piece 41.1 Complete ✅
 
 **Branch:** `milestone-41.1-google-auth-foundation` | **PR:** open
