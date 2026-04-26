@@ -19,6 +19,31 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /debug 2026-04-26 — Heartbeat Bypass Fix ✅
+
+**Branch:** `claude-fix-heartbeat-bypass` | **PR:** #73 merged
+
+Fixed a feature limitation where heartbeat sessions could not send outbound messages or update memory without triggering approval requests to Slack — which defeated the purpose of the heartbeat entirely.
+
+**Root causes found and fixed:**
+
+1. **No heartbeat context in the executor** — With the `standard` profile (threshold=3), every tool at action level ≤3 required approval. `send_email` (level 1), `send_slack_message`/`send_sms` (level 2), and `update_memory_narrative`/`memory_write` (level 3) are exactly what a heartbeat turn needs. No bypass existed.
+
+2. **Session key never propagated per-turn** — `AgentRuntime.process_message()` passed `self._config` (static construction-time config, `session_key=None`) to the executor on every tool call. This caused approval prompts to show `Session :` (empty) and prevented heartbeat-session detection.
+
+**Changes made:**
+
+- **`openrattler/security/action_levels.py`** — added `HEARTBEAT_AUTO_APPROVE_OPERATIONS` frozenset: `send_slack_message`, `send_email`, `send_sms`, `update_memory_narrative`, `memory_write`
+- **`openrattler/config/loader.py`** — added `HeartbeatConfig.bypass_approval` (default `True`); set to `False` to require full approval even during heartbeat
+- **`openrattler/tools/executor.py`** — added `heartbeat_bypass_ops: frozenset[str]` parameter; bypass fires only when `session_key.startswith("agent:main:heartbeat:")` AND tool is in bypass set; non-heartbeat sessions are never affected
+- **`openrattler/agents/runtime.py`** — fixed session_key propagation: `session_config = self._config.model_copy(update={"session_key": session_key})` created per turn; approval requests now carry the correct session key
+- **`openrattler/startup.py`** — wires `heartbeat_bypass_ops` from `config.heartbeat.bypass_approval`
+- **`tests/test_tools/test_executor.py`** — 5 new `TestHeartbeatBypass` tests; 2216 total tests passing
+
+**Secondary note:** The "no rationale provided" in approval messages is expected — the LLM doesn't populate `tool_call.rationale` by default. Those approvals were from the earlier interactive session (not the heartbeat), and the empty rationale was benign. The repeated approval storm in the Slack log was caused by the heartbeat and the interactive session both trying to get approval at the same time with no way to resolve them.
+
+---
+
 ## /build 2026-04-24 — Piece 41.6 Complete ✅
 
 **Branch:** `milestone-41.6-tasks-tools` | **PR:** open
