@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, Optional
 
 import anthropic
@@ -128,24 +129,48 @@ def _convert_messages(
     return system_str, converted
 
 
-def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sanitize_tool_name(name: str) -> str:
+    """Replace characters invalid in the Anthropic API tool name with underscores.
+
+    The API requires names matching ``^[a-zA-Z0-9_-]{1,128}$``.  MCP tools are
+    registered as ``mcp:{server_id}.{tool_name}`` — the colon and dot are illegal.
+    Replacing them with ``_`` produces a unique, reversible-enough name for the
+    round-trip mapping in ``_convert_tools``.
+    """
+    return re.sub(r"[^a-zA-Z0-9_\-]", "_", name)[:128]
+
+
+def _convert_tools(
+    tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Convert OpenAI-format tool definitions to Anthropic format.
 
     OpenAI:   ``{"type": "function", "function": {"name": ..., "description": ...,
               "parameters": {...}}}``
     Anthropic: ``{"name": ..., "description": ..., "input_schema": {...}}``
+
+    Returns:
+        ``(anthropic_tools, api_name_to_registry_name)`` — the converted tool list
+        and a mapping from sanitized API names back to the original registry names.
+        The mapping is used in ``_parse_response`` to restore the original name in
+        ``ToolCall`` so the executor can look it up in the registry.
     """
     result: list[dict[str, Any]] = []
+    name_map: dict[str, str] = {}  # api_name → original registry name
+
     for tool in tools:
         fn = tool.get("function", tool)  # handle both wrapped and bare dicts
+        original_name: str = fn.get("name", "")
+        api_name = _sanitize_tool_name(original_name)
+        name_map[api_name] = original_name
         result.append(
             {
-                "name": fn.get("name", ""),
+                "name": api_name,
                 "description": fn.get("description", ""),
                 "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
             }
         )
-    return result
+    return result, name_map
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +218,7 @@ class AnthropicProvider(LLMProvider):
         effective_model = model or self._default_model
         system_str, anthropic_messages = _convert_messages(messages)
 
+        name_map: dict[str, str] = {}
         kwargs: dict[str, Any] = {
             "model": effective_model,
             "messages": anthropic_messages,
@@ -201,12 +227,13 @@ class AnthropicProvider(LLMProvider):
         if system_str:
             kwargs["system"] = system_str
         if tools:
-            kwargs["tools"] = _convert_tools(tools)
+            api_tools, name_map = _convert_tools(tools)
+            kwargs["tools"] = api_tools
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = await self._client.messages.create(**kwargs)
-                return self._parse_response(response, effective_model)
+                return self._parse_response(response, effective_model, name_map)
             except anthropic.RateLimitError:
                 if attempt == _MAX_RETRIES:
                     raise
@@ -214,8 +241,20 @@ class AnthropicProvider(LLMProvider):
 
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _parse_response(self, response: Any, requested_model: str) -> LLMResponse:
-        """Convert a raw Anthropic ``Message`` into a ``LLMResponse``."""
+    def _parse_response(
+        self,
+        response: Any,
+        requested_model: str,
+        name_map: Optional[dict[str, str]] = None,
+    ) -> LLMResponse:
+        """Convert a raw Anthropic ``Message`` into a ``LLMResponse``.
+
+        Args:
+            name_map: Mapping from sanitized API names back to original registry
+                      names (produced by ``_convert_tools``).  When the LLM calls
+                      a tool it uses the sanitized name; the map restores the
+                      original so ``ToolExecutor`` can look it up in the registry.
+        """
         content_text = ""
         tool_calls: list[ToolCall] = []
 
@@ -224,9 +263,12 @@ class AnthropicProvider(LLMProvider):
             if block_type == "text":
                 content_text += block.text
             elif block_type == "tool_use":
+                api_name: str = block.name
+                # Restore original registry name so the executor can route correctly.
+                registry_name = (name_map or {}).get(api_name, api_name)
                 tool_calls.append(
                     ToolCall(
-                        tool_name=block.name,
+                        tool_name=registry_name,
                         arguments=dict(block.input) if block.input else {},
                         call_id=block.id,
                     )
