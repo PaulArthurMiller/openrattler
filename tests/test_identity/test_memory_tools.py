@@ -315,7 +315,7 @@ class TestAtomicWrite:
 class TestMemoryConfig:
     def test_default_narrative_max_tokens(self) -> None:
         cfg = MemoryConfig()
-        assert cfg.narrative_max_tokens == 2000
+        assert cfg.narrative_max_tokens == 4000
 
     def test_default_narrative_max_write_tokens(self) -> None:
         cfg = MemoryConfig()
