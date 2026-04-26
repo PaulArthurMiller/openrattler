@@ -44,8 +44,10 @@ SECURITY NOTES
 
 from __future__ import annotations
 
+import html as _html_module
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -234,13 +236,15 @@ class ResearchAgent:
                 search_hits, request, trace_id, from_agent, to_agent, session_key
             )
 
-        # Phase 2: Fetch each hit, applying safety constraints
+        # Phase 2: Fetch each hit, applying safety constraints.
+        # snippet is passed as fallback content when fetch fails (403, paywall, etc.).
         fetched: list[dict[str, Any]] = []
         for hit in search_hits[: request.max_results]:
             url = str(hit.get("url", ""))
             title = str(hit.get("title", ""))
             source_type_str = str(hit.get("source_type", "general"))
-            page = await self._web_fetch(url, title, source_type_str)
+            snippet_str = str(hit.get("snippet", ""))
+            page = await self._web_fetch(url, title, source_type_str, snippet=snippet_str)
             if page is not None:
                 fetched.append(page)
 
@@ -391,6 +395,9 @@ class ResearchAgent:
                 {
                     "url": url,
                     "title": r.get("title") or "",
+                    "snippet": r.get("snippet") or "",  # preserved for synthesis fallback
+                    "source": r.get("source") or "",
+                    "date": r.get("date") or "",
                     "source_type": "general",
                 }
             )
@@ -405,37 +412,46 @@ class ResearchAgent:
         url: str,
         title: str,
         source_type: str = "general",
+        snippet: str = "",
     ) -> Optional[dict[str, Any]]:
         """Fetch *url*, enforcing content-type, size, and timeout constraints.
 
         Returns a dict suitable for ``CitationRecord`` construction, or
-        ``None`` if the fetch was rejected or failed.
+        ``None`` if the fetch was rejected or failed AND no snippet is available.
+
+        When fetch fails for any reason (network error, 403, wrong content type,
+        oversized body) and a Serper snippet was provided, returns a synthetic
+        page dict using the snippet as content.  This ensures the synthesis step
+        has something meaningful to work with even when the full page is unavailable.
+
+        HTML responses are stripped of tags before being forwarded to synthesis,
+        producing clean text rather than raw HTML boilerplate.
 
         Security notes:
-        - Only HTTP/HTTPS URLs are attempted; other schemes are rejected by
-          ``CitationRecord.url_must_be_http`` downstream, but we guard here too.
+        - Only HTTP/HTTPS URLs are attempted; other schemes are rejected here.
         - Content type is checked against ``allowed_content_types`` from config.
         - Response body is capped at ``max_fetch_size_bytes`` — content beyond
-          that limit is rejected entirely (not truncated) to prevent an attacker
-          from forcing expensive parsing of large malicious payloads.
+          that limit is rejected entirely (not truncated).
         - Request timeout is set via ``httpx`` to enforce ``request_timeout_seconds``.
+        - Snippets originate from Serper results that passed Window 1 sanitization.
         """
         if not url.startswith(("http://", "https://")):
-            return None
+            return self._make_snippet_page(title, url, source_type, snippet) if snippet else None
+
         try:
             final_url, content_type, body = await self._fetch_url(
                 url, self._config.request_timeout_seconds
             )
         except Exception as exc:
-            logger.debug("web_fetch failed for %r: %s", url, exc)
-            return None
+            logger.debug("web_fetch failed for %r: %s — using snippet fallback", url, exc)
+            return self._make_snippet_page(title, url, source_type, snippet) if snippet else None
 
         # Content type constraint
         if content_type not in self._config.allowed_content_types:
             logger.debug(
                 "web_fetch rejected %r: content-type %r not in allowlist", url, content_type
             )
-            return None
+            return self._make_snippet_page(title, url, source_type, snippet) if snippet else None
 
         # Size constraint — reject entirely, not truncate
         if len(body) > self._config.max_fetch_size_bytes:
@@ -445,17 +461,66 @@ class ResearchAgent:
                 len(body),
                 self._config.max_fetch_size_bytes,
             )
-            return None
+            return self._make_snippet_page(title, url, source_type, snippet) if snippet else None
 
-        text = body.decode("utf-8", errors="replace")
+        raw = body.decode("utf-8", errors="replace")
+        # Strip HTML tags before synthesis — raw HTML is mostly navigation/boilerplate.
+        if "text/html" in content_type:
+            text = self._strip_html(raw)[:5_000]
+        else:
+            text = raw[:5_000]
+
         return {
             "title": title,
             "url": final_url,
             "domain": "",  # Overwritten by CitationRecord.ensure_domain_from_url
             "source_type": source_type,
             "retrieval_timestamp": datetime.now(timezone.utc).isoformat(),
-            "content": text[:5_000],  # Cap content forwarded to synthesis
+            "content": text,
         }
+
+    def _make_snippet_page(
+        self, title: str, url: str, source_type: str, snippet: str
+    ) -> dict[str, Any]:
+        """Build a synthetic page dict from a Serper snippet.
+
+        Used when the full page fetch fails or is rejected.  The snippet
+        is already Window-1 sanitized by the Serper client layer.
+        """
+        return {
+            "title": title,
+            "url": url,
+            "domain": "",
+            "source_type": source_type,
+            "retrieval_timestamp": datetime.now(timezone.utc).isoformat(),
+            "content": snippet,
+        }
+
+    @staticmethod
+    def _strip_html(html: str) -> str:
+        """Extract plain text from HTML, removing tags and collapsing whitespace.
+
+        Removes ``<script>`` and ``<style>`` blocks entirely, strips all other
+        tags, decodes HTML entities, and collapses whitespace.  The result is
+        clean prose text suitable for LLM synthesis.
+
+        Security note: this is a one-way transformation from HTML to text.
+        The output still passes through ResearchSanitizer (Window 2) before
+        reaching the calling agent.
+        """
+        # Remove script/style blocks with their content
+        text = re.sub(
+            r"<(script|style)[^>]*>.*?</(script|style)>",
+            " ",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        # Remove remaining HTML tags
+        text = re.sub(r"<[^>]+>", " ", text)
+        # Decode HTML entities (e.g. &amp; → &)
+        text = _html_module.unescape(text)
+        # Collapse whitespace
+        return re.sub(r"\s+", " ", text).strip()
 
     async def _fetch_url(
         self,
@@ -609,20 +674,50 @@ class ResearchAgent:
     ) -> UniversalMessage:
         """Build a UM for URL-discovery mode (endpoint='search').
 
-        The 'search' endpoint returns source URLs from Serper — no page
-        content is fetched.  The citation list is the deliverable; the
-        summary describes the discovery result in plain text.
+        Serper 'search' results include snippet text alongside URLs.  When
+        snippets are available, they are used as synthetic page content and
+        routed through ``_synthesize`` to produce a real summary.  When no
+        snippets are available, falls back to a minimal URL-list description.
 
-        The sanitizer still runs so the URL list is validated before the
-        UM is constructed.
+        The sanitizer still runs so all output is validated before the UM
+        is constructed.
         """
         hits = search_hits[: request.max_results]
-        raw_summary = (
-            f"URL discovery for: {request.query!r}. "
-            f"Found {len(hits)} source(s). "
-            "No page content was fetched — 'search' endpoint returns URLs only. "
-            "See citations for the discovered sources."
-        )
+
+        # Build synthetic pages from snippets to enable real synthesis
+        snippet_pages = [
+            {
+                "title": h.get("title", ""),
+                "url": h.get("url", ""),
+                "domain": "",
+                "source_type": h.get("source_type", "general"),
+                "retrieval_timestamp": datetime.now(timezone.utc).isoformat(),
+                "content": h.get("snippet", ""),
+            }
+            for h in hits
+            if h.get("snippet")
+        ]
+
+        if snippet_pages:
+            raw_summary = await self._synthesize(request, snippet_pages)
+            logger.info(
+                "_build_url_discovery_result: synthesized from %d snippets for query=%r",
+                len(snippet_pages),
+                request.query,
+            )
+        else:
+            raw_summary = (
+                f"URL discovery for: {request.query!r}. "
+                f"Found {len(hits)} source(s). "
+                "No page content was fetched — 'search' endpoint returns URLs only. "
+                "See citations for the discovered sources."
+            )
+            logger.info(
+                "_build_url_discovery_result: no snippets available, %d URLs for query=%r",
+                len(hits),
+                request.query,
+            )
+
         raw_citations = [
             {
                 "title": h.get("title", ""),
@@ -633,7 +728,6 @@ class ResearchAgent:
             }
             for h in hits
         ]
-        logger.info("_build_url_discovery_result: %d URLs for query=%r", len(hits), request.query)
         sanitized = await self._sanitizer.sanitize(
             raw_summary=raw_summary,
             raw_citations=raw_citations,
