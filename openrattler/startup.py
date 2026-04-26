@@ -665,7 +665,10 @@ async def build_application(
     # The router dispatches to the highest-fidelity available channel:
     # Slack > Email > CLI fallback.  The CLI fallback is always available
     # so approval requests are never silently dropped.
-    from openrattler.security.action_levels import ApprovalThresholdPolicy
+    from openrattler.security.action_levels import (
+        HEARTBEAT_AUTO_APPROVE_OPERATIONS,
+        ApprovalThresholdPolicy,
+    )
     from openrattler.security.approval import (
         ApprovalHandler,
         ApprovalHandlerRouter,
@@ -714,8 +717,16 @@ async def build_application(
     )
     approval_manager.set_handler(router)
 
+    heartbeat_bypass_ops = (
+        HEARTBEAT_AUTO_APPROVE_OPERATIONS if config.heartbeat.bypass_approval else frozenset()
+    )
     executor = ToolExecutor(
-        registry, audit, approval_manager=approval_manager, policy=policy, mcp_bridge=mcp_bridge
+        registry,
+        audit,
+        approval_manager=approval_manager,
+        policy=policy,
+        mcp_bridge=mcp_bridge,
+        heartbeat_bypass_ops=heartbeat_bypass_ops,
     )
 
     # 10. SocialTools.

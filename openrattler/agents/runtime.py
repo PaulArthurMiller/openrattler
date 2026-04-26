@@ -141,6 +141,11 @@ class AgentRuntime:
         tool_loop_count = 0
         last_response: Optional[LLMResponse] = None
 
+        # Create a per-turn config copy with the current session key so that
+        # approval requests, audit events, and heartbeat bypass checks reflect
+        # the actual session rather than the static construction-time config.
+        session_config = self._config.model_copy(update={"session_key": session_key})
+
         try:
             # 1. Persist user message
             session.history.append(user_message)
@@ -169,7 +174,7 @@ class AgentRuntime:
                 # approval audit events can be correlated end-to-end.
                 for tc in last_response.tool_calls:
                     tc = tc.model_copy(update={"trace_id": user_message.trace_id})
-                    tool_result = await self._tool_executor.execute(self._config, tc)
+                    tool_result = await self._tool_executor.execute(session_config, tc)
                     result_content = (
                         str(tool_result.result)
                         if tool_result.success

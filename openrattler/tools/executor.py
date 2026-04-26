@@ -73,29 +73,36 @@ class ToolExecutor:
         approval_manager: Optional["ApprovalManager"] = None,
         mcp_bridge: Optional["MCPToolBridge"] = None,
         policy: Optional["ApprovalThresholdPolicy"] = None,
+        heartbeat_bypass_ops: Optional[frozenset[str]] = None,
     ) -> None:
         """Initialise the executor.
 
         Args:
-            registry:         Registry containing all registered tools and handlers.
-            audit_log:        Audit log that receives one entry per execution.
-            approval_manager: Optional human-in-the-loop approval broker.
-                              When set, tools requiring approval will pause here
-                              until approved, denied, or timed out.
-            mcp_bridge:       Optional MCP security bridge.  When set, tool calls
-                              whose name starts with ``mcp:`` are routed to the
-                              bridge instead of a local Python handler.
-            policy:           Optional ``ApprovalThresholdPolicy`` that maps action
-                              levels to approval requirements.  When provided, it
-                              replaces the legacy ``tool_def.requires_approval``
-                              boolean.  When ``None``, the legacy flag is used
-                              (backward-compat until all callers pass a policy).
+            registry:             Registry containing all registered tools and handlers.
+            audit_log:            Audit log that receives one entry per execution.
+            approval_manager:     Optional human-in-the-loop approval broker.
+                                  When set, tools requiring approval will pause here
+                                  until approved, denied, or timed out.
+            mcp_bridge:           Optional MCP security bridge.  When set, tool calls
+                                  whose name starts with ``mcp:`` are routed to the
+                                  bridge instead of a local Python handler.
+            policy:               Optional ``ApprovalThresholdPolicy`` that maps action
+                                  levels to approval requirements.  When provided, it
+                                  replaces the legacy ``tool_def.requires_approval``
+                                  boolean.  When ``None``, the legacy flag is used
+                                  (backward-compat until all callers pass a policy).
+            heartbeat_bypass_ops: Frozenset of tool names that are auto-approved
+                                  when the requesting session is a heartbeat session
+                                  (session_key starts with ``agent:main:heartbeat:``).
+                                  Populated from ``HeartbeatConfig.bypass_approval`` at
+                                  startup.  ``None`` or empty frozenset disables bypass.
         """
         self._registry = registry
         self._audit = audit_log
         self._approval_manager = approval_manager
         self._mcp_bridge = mcp_bridge
         self._policy = policy
+        self._heartbeat_bypass_ops: frozenset[str] = heartbeat_bypass_ops or frozenset()
 
     async def execute(
         self,
@@ -177,7 +184,22 @@ class ToolExecutor:
             return bridge_result
 
         # --- Step 5: approval gate -------------------------------------------
-        if needs_approval(tool_def, self._policy) and self._approval_manager is not None:
+        # Heartbeat sessions get a pre-authorized bypass for outbound messages
+        # and memory writes — the core operations a heartbeat turn needs in order
+        # to report results.  Without the bypass the approval gate blocks every
+        # write and send, making heartbeat non-functional.
+        # The bypass only fires when: (a) the session key identifies a heartbeat
+        # run, (b) the specific tool is in the configured bypass set, and
+        # (c) bypass is enabled (heartbeat_bypass_ops is non-empty).
+        session_key = agent_config.session_key or ""
+        is_heartbeat_session = session_key.startswith("agent:main:heartbeat:")
+        heartbeat_bypassed = is_heartbeat_session and tool_name in self._heartbeat_bypass_ops
+
+        if (
+            needs_approval(tool_def, self._policy)
+            and self._approval_manager is not None
+            and not heartbeat_bypassed
+        ):
             request = self._build_approval_request(
                 agent_config, tool_call, self._approval_manager, tool_def.action_level
             )

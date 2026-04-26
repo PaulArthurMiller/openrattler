@@ -90,6 +90,25 @@ DEAD_STOP_ACTIONS: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
+# Heartbeat auto-approve registry
+# ---------------------------------------------------------------------------
+
+#: Operations automatically approved during heartbeat sessions when
+#: ``HeartbeatConfig.bypass_approval`` is True.  Heartbeat turns are designed
+#: to send at most one outbound message and update working memory, so these
+#: operations are pre-authorized in that context.  All other operations still
+#: go through the normal approval gate.
+HEARTBEAT_AUTO_APPROVE_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "send_slack_message",
+        "send_email",
+        "send_sms",
+        "update_memory_narrative",
+        "memory_write",
+    }
+)
+
+# ---------------------------------------------------------------------------
 # DeadStopError
 # ---------------------------------------------------------------------------
 

@@ -534,3 +534,217 @@ class TestPiece395Integration:
         assert len(captured) == 1
         assert captured[0].rationale == "User asked me to save the document."
         print(f"[OK] rationale propagated to approval request: {captured[0].rationale}")
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat bypass — auto-approve during scheduled heartbeat sessions
+# ---------------------------------------------------------------------------
+
+
+def _make_executor_with_bypass(
+    tmp_path: Path,
+    bypass_ops: frozenset,
+    threshold: int = 3,
+) -> tuple["ToolExecutor", "AuditLog", "ToolRegistry"]:
+    """Build executor with approval policy and a heartbeat bypass set."""
+    from openrattler.security.action_levels import ApprovalThresholdPolicy
+    from openrattler.security.approval import ApprovalManager
+
+    reg = ToolRegistry()
+    log = AuditLog(tmp_path / "audit.jsonl")
+    policy = ApprovalThresholdPolicy(threshold=threshold)
+    manager = ApprovalManager(log)
+    executor = ToolExecutor(
+        reg, log, approval_manager=manager, policy=policy, heartbeat_bypass_ops=bypass_ops
+    )
+    return executor, log, reg
+
+
+def _heartbeat_agent(tool_name: str = "send_slack_message") -> AgentConfig:
+    """Build an agent config whose session key identifies a heartbeat run."""
+    return AgentConfig(
+        agent_id="agent:main:main",
+        name="Main",
+        description="OpenRattler personal assistant",
+        model="test-model",
+        trust_level=TrustLevel.main,
+        allowed_tools=[tool_name],
+        session_key="agent:main:heartbeat:hb_2026-01-01T12:00:00_000000Z",
+    )
+
+
+class TestHeartbeatBypass:
+    """Approval gate is skipped for bypass-listed ops during heartbeat sessions."""
+
+    async def test_bypass_op_in_heartbeat_session_skips_approval(self, tmp_path: Path) -> None:
+        """A bypass-listed tool in a heartbeat session executes without approval."""
+        from openrattler.security.action_levels import HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        from openrattler.security.approval import ApprovalManager, ApprovalRequest
+
+        executor, log, reg = _make_executor_with_bypass(
+            tmp_path, bypass_ops=HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        )
+        tool_def, handler = _make_tool("send_slack_message", action_level=2)
+        reg.register(tool_def, handler)
+
+        approval_called: list[bool] = []
+
+        async def should_not_be_called(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            approval_called.append(True)
+
+        manager = executor._approval_manager
+        assert manager is not None
+        manager.set_handler(should_not_be_called)
+
+        result = await executor.execute(
+            _heartbeat_agent("send_slack_message"),
+            ToolCall(tool_name="send_slack_message", call_id="hb-1"),
+        )
+        assert result.success is True
+        assert approval_called == [], "Approval handler must not be called during heartbeat bypass"
+        print("[OK] Heartbeat bypass: send_slack_message executed without approval.")
+
+    async def test_non_bypass_op_in_heartbeat_session_still_requires_approval(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-bypass tool in a heartbeat session still triggers the approval gate."""
+        from openrattler.security.action_levels import HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        from openrattler.security.approval import ApprovalManager, ApprovalRequest
+
+        executor, log, reg = _make_executor_with_bypass(
+            tmp_path, bypass_ops=HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        )
+        tool_def, handler = _make_tool("some_dangerous_tool", action_level=2)
+        reg.register(tool_def, handler)
+
+        approval_called: list[bool] = []
+
+        async def auto_deny(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            approval_called.append(True)
+            await mgr.resolve(req.approval_id, approved=False, decided_by="test:auto_deny")
+
+        manager = executor._approval_manager
+        assert manager is not None
+        manager.set_handler(auto_deny)
+
+        agent = AgentConfig(
+            agent_id="agent:main:main",
+            name="Main",
+            description="",
+            model="test-model",
+            trust_level=TrustLevel.main,
+            allowed_tools=["some_dangerous_tool"],
+            session_key="agent:main:heartbeat:hb_2026-01-01T12:00:00_000000Z",
+        )
+        result = await executor.execute(
+            agent,
+            ToolCall(tool_name="some_dangerous_tool", call_id="hb-2"),
+        )
+        assert result.success is False
+        assert approval_called == [True], "Non-bypass tool must still go through approval"
+        print("[OK] Non-bypass tool in heartbeat session still triggered approval gate.")
+
+    async def test_bypass_op_in_normal_session_still_requires_approval(
+        self, tmp_path: Path
+    ) -> None:
+        """A bypass-listed tool in a non-heartbeat session is NOT bypassed."""
+        from openrattler.security.action_levels import HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        from openrattler.security.approval import ApprovalManager, ApprovalRequest
+
+        executor, log, reg = _make_executor_with_bypass(
+            tmp_path, bypass_ops=HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        )
+        tool_def, handler = _make_tool("send_slack_message", action_level=2)
+        reg.register(tool_def, handler)
+
+        approval_called: list[bool] = []
+
+        async def auto_approve(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            approval_called.append(True)
+            await mgr.resolve(req.approval_id, approved=True, decided_by="test:auto_approve")
+
+        manager = executor._approval_manager
+        assert manager is not None
+        manager.set_handler(auto_approve)
+
+        normal_agent = AgentConfig(
+            agent_id="agent:main:main",
+            name="Main",
+            description="",
+            model="test-model",
+            trust_level=TrustLevel.main,
+            allowed_tools=["send_slack_message"],
+            session_key="agent:main:slack:abc123",
+        )
+        result = await executor.execute(
+            normal_agent,
+            ToolCall(tool_name="send_slack_message", call_id="hb-3"),
+        )
+        assert result.success is True
+        assert approval_called == [
+            True
+        ], "Bypass ops in normal sessions must still require approval"
+        print("[OK] Bypass op in non-heartbeat session correctly triggered approval gate.")
+
+    async def test_empty_bypass_ops_disables_bypass(self, tmp_path: Path) -> None:
+        """When heartbeat_bypass_ops is empty, no bypass occurs even for heartbeat sessions."""
+        from openrattler.security.approval import ApprovalManager, ApprovalRequest
+
+        executor, log, reg = _make_executor_with_bypass(tmp_path, bypass_ops=frozenset())
+        tool_def, handler = _make_tool("send_slack_message", action_level=2)
+        reg.register(tool_def, handler)
+
+        approval_called: list[bool] = []
+
+        async def auto_deny(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            approval_called.append(True)
+            await mgr.resolve(req.approval_id, approved=False, decided_by="test:auto_deny")
+
+        manager = executor._approval_manager
+        assert manager is not None
+        manager.set_handler(auto_deny)
+
+        result = await executor.execute(
+            _heartbeat_agent("send_slack_message"),
+            ToolCall(tool_name="send_slack_message", call_id="hb-4"),
+        )
+        assert result.success is False
+        assert approval_called == [True], "Empty bypass set must not bypass approval"
+        print("[OK] Empty bypass ops: approval was required even in heartbeat session.")
+
+    async def test_memory_write_bypassed_in_heartbeat(self, tmp_path: Path) -> None:
+        """update_memory_narrative (level 3) is bypassed in heartbeat sessions."""
+        from openrattler.security.action_levels import HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        from openrattler.security.approval import ApprovalManager, ApprovalRequest
+
+        executor, log, reg = _make_executor_with_bypass(
+            tmp_path, bypass_ops=HEARTBEAT_AUTO_APPROVE_OPERATIONS
+        )
+        tool_def, handler = _make_tool("update_memory_narrative", action_level=3)
+        reg.register(tool_def, handler)
+
+        approval_called: list[bool] = []
+
+        async def should_not_be_called(req: ApprovalRequest, mgr: ApprovalManager) -> None:
+            approval_called.append(True)
+
+        manager = executor._approval_manager
+        assert manager is not None
+        manager.set_handler(should_not_be_called)
+
+        agent = AgentConfig(
+            agent_id="agent:main:main",
+            name="Main",
+            description="",
+            model="test-model",
+            trust_level=TrustLevel.main,
+            allowed_tools=["update_memory_narrative"],
+            session_key="agent:main:heartbeat:hb_2026-01-01T12:00:00_000000Z",
+        )
+        result = await executor.execute(
+            agent,
+            ToolCall(tool_name="update_memory_narrative", call_id="hb-5"),
+        )
+        assert result.success is True
+        assert approval_called == [], "Memory write must be bypassed in heartbeat sessions"
+        print("[OK] update_memory_narrative bypassed in heartbeat session.")
