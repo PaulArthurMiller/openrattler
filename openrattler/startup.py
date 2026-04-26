@@ -13,6 +13,7 @@ COMPONENT WIRING ORDER
 5.  MemorySecurityAgent
 6.  SocialStore (with security agent)
 7.  ToolRegistry + configure_default_registry
+7b. File and session tools registered explicitly (file_ops, session_tools)
 8.  MCPManager — load manifests + connect bundled servers
 9.  MCPToolBridge + ToolExecutor
 10. SocialTools registered into registry
@@ -629,6 +630,29 @@ async def build_application(
     # 7. ToolRegistry.
     registry = ToolRegistry()
     configure_default_registry(registry)
+
+    # 7b. File and session tools.
+    #     Imported and registered explicitly here so they are in the registry
+    #     regardless of import order (the @tool decorator runs at import time, but
+    #     Python's module cache means it may have already run before
+    #     configure_default_registry was called).
+    #     configure_allowed_directories restricts file_* to the workspace only;
+    #     configure_transcript_store wires sessions_history to the live store.
+    from openrattler.tools.builtin.file_ops import (
+        configure_allowed_directories,
+        file_list,
+        file_read,
+        file_write,
+    )
+    from openrattler.tools.builtin.session_tools import (
+        configure_transcript_store,
+        sessions_history,
+    )
+
+    configure_allowed_directories([workspace_dir])
+    configure_transcript_store(transcript_store)
+    for _fn in (file_read, file_write, file_list, sessions_history):
+        registry.register(_fn._tool_definition, _fn)  # type: ignore[union-attr]
 
     # 8. MCPManager — load manifests + connect.
     mcp_security = config.mcp.security

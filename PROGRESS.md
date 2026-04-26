@@ -19,6 +19,31 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /debug 2026-04-26 — Tool Registry Context in System Prompt ✅
+
+**Branch:** `claude-tool-registry-context` | **PR:** open
+
+Fixed a performance issue where the assistant never received the list of available tools — and their security levels — in its system prompt context. Without this, the LLM had to guess what tools existed rather than making informed choices.
+
+**Root causes found:**
+
+1. **`trust_defaults["main"]` was stale** — The list in both `loader.py` (code default) and `~/.openrattler/config.json` (user override) was last updated when the project had 6 tools. After 41.x, there are 50+ registered tools. New tools (Google Calendar/Drive/Gmail/Tasks, social tools, `update_heartbeat`, file ops, session history) were never added to the allowlist, so `list_tools_for_agent()` filtered them out.
+
+2. **`file_ops.py` and `session_tools.py` were never registered** — Both modules use the `@tool` decorator which registers at import time, but neither `startup.py` nor `cli/chat.py` ever imported them. The tools existed on disk but were invisible to the runtime.
+
+**Changes made:**
+
+- **`openrattler/config/loader.py`** — Expanded `ToolsConfig.trust_defaults["main"]` from 6 tools to all 50+ main-agent tools, grouped by category with inline comments.
+- **`openrattler/startup.py`** — Added step 7b: explicit import and registration of `file_read`, `file_write`, `file_list`, `sessions_history`; calls `configure_allowed_directories([workspace_dir])` and `configure_transcript_store(transcript_store)`.
+- **`openrattler/cli/chat.py`** — Same explicit file/session tool wiring added to `CLIChat.open()`.
+- **`~/.openrattler/config.json`** — Updated `tools.trust_defaults.main` to the full expanded list (matches `loader.py` defaults).
+
+**Security note:** The `IdentityLoader._build_tools_block()` method (which generates the system prompt tools section) was already correctly implemented — it calls `list_tools_for_agent()` which enforces the full permission model (allowlist + trust level). The fix was entirely in the *data* (what tools are allowed), not the *mechanism* (how the tool list is generated). Subagent-internal tools (`web_search`, `web_fetch`) remain excluded from the main registry by design.
+
+**2271 tests passing**, mypy clean.
+
+---
+
 ## /debug 2026-04-26 — Heartbeat Bypass Fix ✅
 
 **Branch:** `claude-fix-heartbeat-bypass` | **PR:** #73 merged

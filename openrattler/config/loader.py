@@ -554,12 +554,62 @@ class ToolsConfig(BaseModel):
             "public": [],
             "mcp": [],
             "main": [
+                # --- Narrative memory ---
                 "update_memory_narrative",
                 "update_user_profile",
                 "update_identity",
                 "memory_read",
                 "memory_write",
+                # --- Heartbeat & social awareness ---
+                "update_heartbeat",
+                "acknowledge_social_alert",
+                "add_learning_observation",
+                "adjust_contact_attention",
+                # --- Research ---
                 "research_query",
+                # --- Outbound messaging ---
+                "send_sms",
+                "send_slack_message",
+                "send_email",
+                # --- File operations (workspace-sandboxed) ---
+                "file_read",
+                "file_write",
+                "file_list",
+                # --- Session history (approval-gated) ---
+                "sessions_history",
+                # --- Google Calendar ---
+                "calendar_list_events",
+                "calendar_read_event",
+                "calendar_create_event",
+                # --- Google Drive ---
+                "drive_list_files",
+                "drive_list_folders",
+                "drive_read_file",
+                "drive_create_folder",
+                "drive_upload_file",
+                # --- Gmail ---
+                "gmail_list_threads",
+                "gmail_read_thread",
+                "gmail_list_labels",
+                "gmail_create_label",
+                "gmail_apply_label",
+                "gmail_remove_label",
+                "gmail_star_message",
+                "gmail_mark_important",
+                "gmail_archive",
+                # --- Google Tasks ---
+                "tasks_list_tasklists",
+                "tasks_list_tasks",
+                "tasks_read_task",
+                "tasks_create_task",
+                "tasks_complete_task",
+                # --- Claude Code (registered only when cc.enabled=True) ---
+                "cc_read_analyze",
+                "cc_write_task",
+                "cc_run_with_shell",
+                "cc_git_commit",
+                "cc_git_push_branch",
+                "cc_promote_request",
             ],
             "local": [],
             "security": [],
