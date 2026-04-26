@@ -411,6 +411,17 @@ class HeartbeatConfig(BaseModel):
             "of full retention."
         ),
     )
+    bypass_approval: bool = Field(
+        default=True,
+        description=(
+            "When True, heartbeat sessions may send a single outbound message "
+            "to approved channels and write to approved memory files (MEMORY.md, "
+            "memory.json) without requiring human approval.  Without this bypass, "
+            "the approval gate blocks all outbound messages and memory writes, "
+            "making the heartbeat unable to report results.  Set to False to "
+            "require approval for all heartbeat tool calls (not recommended)."
+        ),
+    )
 
 
 class GoogleAuthConfig(BaseModel):
