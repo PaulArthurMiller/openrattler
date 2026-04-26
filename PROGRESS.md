@@ -19,6 +19,37 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /debug 2026-04-26 — Heartbeat Weather + Research Quality Fix ✅
+
+**Branch:** `claude-fix-weather-research` | **PR:** open
+
+Fixed two long-standing heartbeat tool issues — the assistant has been reporting "couldn't pull a 3-day forecast" and "URL-only results / HTML boilerplate" since April 3.
+
+**Root causes found:**
+
+1. **Weather MCP tools not in allowlist** — `mcp:weather-mcp.get_forecast` and `mcp:weather-mcp.get_alerts` are registered by `MCPManager.connect_all_bundled()` at startup but were never added to `tools.trust_defaults.main` in `loader.py` or `config.json`. `check_permission()` rejected them at the allowlist check, so the agent never saw them in its system prompt. The agent fell back to `research_query` which returned HTML boilerplate from weather websites.
+
+2. **Research pipeline discarding Serper snippets** — `_web_search()` in `agent.py` extracted only `url` and `title` from Serper results, throwing away `snippet`, `source`, and `date`. Serper's news/search snippets contain real article excerpts extracted by Google's indexing. Without them, the pipeline fetched full pages — which typically 403 or return JS-rendered content. Even successful HTML fetches had 5000 chars of navigation/ads before article text. Two sub-problems resulted:
+   - `endpoint="search"`: URL-discovery shortcut returned no content at all, just URLs
+   - `endpoint="news"`: Fetched HTML was mostly boilerplate, synthesis was poor quality
+
+**Changes made:**
+
+- **`openrattler/config/loader.py`** — Added `mcp:weather-mcp.get_forecast` and `mcp:weather-mcp.get_alerts` to `trust_defaults["main"]`
+- **`~/.openrattler/config.json`** — Same additions to live config
+- **`openrattler/agents/research/agent.py`** (multiple changes):
+  - `_web_search`: Preserved `snippet`, `source`, `date` from Serper results in hit dicts
+  - `_run_pipeline`: Passes `snippet` to `_web_fetch` as fallback content
+  - `_web_fetch`: Added `snippet` parameter; falls back to `_make_snippet_page()` when fetch fails (403, network error, content type rejection, size rejection) AND a snippet is available; HTML bodies now stripped of tags via `_strip_html()` before synthesis
+  - `_make_snippet_page()`: New helper that builds a synthetic page dict from a Serper snippet
+  - `_strip_html()`: New static method — strips `<script>`/`<style>` blocks, removes all tags, decodes HTML entities, collapses whitespace
+  - `_build_url_discovery_result`: When search results include snippets, routes them through `_synthesize()` as synthetic page content instead of returning an empty URL-only summary
+- **`tests/test_agents/test_research/test_agent.py`** — 4 new regression tests: snippet fallback on fetch failure, no fallback without snippet, HTML stripping, snippet fallback on size rejection
+
+**Verified:** NWS API returns real forecast data for Bryan, OH (lat 41.4745, lon -84.5524). 2275 tests passing, mypy clean.
+
+---
+
 ## /debug 2026-04-26 — Tool Registry Context in System Prompt ✅
 
 **Branch:** `claude-tool-registry-context` | **PR:** open

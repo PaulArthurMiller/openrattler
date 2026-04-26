@@ -603,6 +603,9 @@ class ToolsConfig(BaseModel):
                 "tasks_read_task",
                 "tasks_create_task",
                 "tasks_complete_task",
+                # --- Weather MCP (bundled NWS server, no key required) ---
+                "mcp:weather-mcp.get_forecast",
+                "mcp:weather-mcp.get_alerts",
                 # --- Claude Code (registered only when cc.enabled=True) ---
                 "cc_read_analyze",
                 "cc_write_task",

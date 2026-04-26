@@ -189,6 +189,50 @@ class TestWebFetchConstraints:
         print(f"[TestWebFetch] non-HTTP URL → result={result}")
         assert result is None
 
+    async def test_snippet_fallback_when_fetch_fails(self, tmp_path: Path) -> None:
+        """When fetch fails but a snippet is provided, returns the snippet as content."""
+        agent, _ = _make_agent(tmp_path)
+        agent._fetch_url = AsyncMock(side_effect=Exception("403 Forbidden"))
+        snippet = "Article snippet with useful content."
+        result = await agent._web_fetch(
+            "https://example.com/article", "Article Title", snippet=snippet
+        )
+        print(f"[TestWebFetch] snippet fallback: result={result}")
+        assert result is not None
+        assert result["content"] == snippet
+        assert result["title"] == "Article Title"
+        assert result["url"] == "https://example.com/article"
+
+    async def test_no_snippet_fallback_when_no_snippet_provided(self, tmp_path: Path) -> None:
+        """When fetch fails with no snippet, still returns None."""
+        agent, _ = _make_agent(tmp_path)
+        agent._fetch_url = AsyncMock(side_effect=Exception("403 Forbidden"))
+        result = await agent._web_fetch("https://example.com/article", "T")
+        print(f"[TestWebFetch] no snippet, exception → result={result}")
+        assert result is None
+
+    async def test_html_stripped_from_fetched_body(self, tmp_path: Path) -> None:
+        """HTML tags are stripped from fetched text/html content before synthesis."""
+        agent, _ = _make_agent(tmp_path)
+        html_body = b"<html><head><title>Test</title></head><body><p>Hello world!</p></body></html>"
+        agent._fetch_url = AsyncMock(return_value=("https://example.com/", "text/html", html_body))
+        result = await agent._web_fetch("https://example.com/page", "Title")
+        print(f"[TestWebFetch] html stripped content: {result['content']!r}")
+        assert result is not None
+        assert "<html>" not in result["content"]
+        assert "Hello world!" in result["content"]
+
+    async def test_snippet_fallback_on_size_rejection(self, tmp_path: Path) -> None:
+        """When body exceeds max size but snippet exists, returns snippet fallback."""
+        agent, _ = _make_agent(tmp_path, max_fetch_size_bytes=10)
+        big_body = b"x" * 200
+        agent._fetch_url = AsyncMock(return_value=("https://example.com/", "text/html", big_body))
+        snippet = "Short snippet text."
+        result = await agent._web_fetch("https://example.com/page", "T", snippet=snippet)
+        print(f"[TestWebFetch] size rejection with snippet: result={result}")
+        assert result is not None
+        assert result["content"] == snippet
+
 
 # ---------------------------------------------------------------------------
 # Run pipeline: sanitizer always called
