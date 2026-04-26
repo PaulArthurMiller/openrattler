@@ -233,6 +233,28 @@ class CLIChat:
 
         agent_config = _resolve_agent_tools(agent_config, config.tools)
 
+        # --- File and session tools ----------------------------------------
+        # Registered explicitly so they are in the registry regardless of import
+        # order (the @tool decorator runs at import time, but Python's module cache
+        # means it may have already run before configure_default_registry was called).
+        # configure_allowed_directories locks file_* to the workspace only;
+        # configure_transcript_store wires sessions_history to the live store.
+        from openrattler.tools.builtin.file_ops import (
+            configure_allowed_directories,
+            file_list,
+            file_read,
+            file_write,
+        )
+        from openrattler.tools.builtin.session_tools import (
+            configure_transcript_store,
+            sessions_history,
+        )
+
+        configure_allowed_directories([self._workspace_dir])
+        configure_transcript_store(transcript_store)
+        for _fn in (file_read, file_write, file_list, sessions_history):
+            registry.register(_fn._tool_definition, _fn)  # type: ignore[union-attr]
+
         # --- MCP framework setup -------------------------------------------
         mcp_security = config.mcp.security
         mcp_manager = MCPManager(
