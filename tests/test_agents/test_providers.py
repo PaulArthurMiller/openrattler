@@ -28,6 +28,7 @@ from openrattler.agents.providers.anthropic_provider import (
     AnthropicProvider,
     _convert_messages,
     _convert_tools,
+    _sanitize_tool_name,
 )
 from openrattler.agents.providers.base import LLMProvider, LLMResponse, TokenUsage
 from openrattler.agents.providers.openai_provider import OpenAIProvider
@@ -421,6 +422,24 @@ class TestConvertMessages:
         assert system == ""
 
 
+class TestSanitizeToolName:
+    def test_clean_name_unchanged(self) -> None:
+        assert _sanitize_tool_name("web_search") == "web_search"
+
+    def test_hyphen_preserved(self) -> None:
+        assert _sanitize_tool_name("my-tool") == "my-tool"
+
+    def test_colon_replaced(self) -> None:
+        assert _sanitize_tool_name("mcp:weather-mcp.get_forecast") == "mcp_weather-mcp_get_forecast"
+
+    def test_dot_replaced(self) -> None:
+        assert _sanitize_tool_name("a.b") == "a_b"
+
+    def test_truncated_at_128(self) -> None:
+        long_name = "a" * 200
+        assert len(_sanitize_tool_name(long_name)) == 128
+
+
 class TestConvertTools:
     def test_openai_format_converted(self) -> None:
         tools = [
@@ -433,9 +452,37 @@ class TestConvertTools:
                 },
             }
         ]
-        converted = _convert_tools(tools)
+        converted, name_map = _convert_tools(tools)
         assert len(converted) == 1
         assert converted[0]["name"] == "web_search"
         assert converted[0]["description"] == "Search the web"
         assert "input_schema" in converted[0]
         assert converted[0]["input_schema"]["type"] == "object"
+        assert name_map == {"web_search": "web_search"}
+
+    def test_mcp_tool_name_sanitized(self) -> None:
+        tools = [
+            {
+                "name": "mcp:weather-mcp.get_forecast",
+                "description": "Get weather forecast",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+        converted, name_map = _convert_tools(tools)
+        assert len(converted) == 1
+        api_name = "mcp_weather-mcp_get_forecast"
+        assert converted[0]["name"] == api_name
+        assert name_map[api_name] == "mcp:weather-mcp.get_forecast"
+
+    def test_name_map_roundtrip(self) -> None:
+        tools = [
+            {"name": "normal_tool", "description": "", "parameters": {}},
+            {"name": "mcp:srv.tool_a", "description": "", "parameters": {}},
+            {"name": "mcp:srv.tool_b", "description": "", "parameters": {}},
+        ]
+        converted, name_map = _convert_tools(tools)
+        assert len(converted) == 3
+        for api_tool in converted:
+            original = name_map.get(api_tool["name"], api_tool["name"])
+            # All original names should be resolvable
+            assert original in {"normal_tool", "mcp:srv.tool_a", "mcp:srv.tool_b"}
