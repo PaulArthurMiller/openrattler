@@ -425,7 +425,10 @@ class NarrativeMemoryTools:
         max_file = self._config.narrative_max_tokens
         write_tokens = _approx_tokens(content)
 
-        if write_tokens > max_write:
+        # Per-write limit applies only to append — its purpose is to keep individual
+        # entries concise. Replace mode must be allowed to write up to the full file
+        # limit so that consolidation (the escape hatch) is never blocked.
+        if mode == "append" and write_tokens > max_write:
             return (
                 f"Error: content is approximately {write_tokens} tokens, "
                 f"exceeding the per-write limit of {max_write}. "

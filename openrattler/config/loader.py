@@ -324,11 +324,11 @@ class MemoryConfig(BaseModel):
     """
 
     narrative_max_tokens: int = Field(
-        default=2000,
+        default=4000,
         ge=1,
         description=(
             "Maximum size of MEMORY.md in approximate tokens (chars ÷ 4). "
-            "Default 2000. Increase if working memory regularly fills up."
+            "Default 4000. Increase if working memory regularly fills up."
         ),
     )
     narrative_max_write_tokens: int = Field(
