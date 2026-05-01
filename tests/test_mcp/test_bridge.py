@@ -518,9 +518,45 @@ class TestFullExecutionPath:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_wrong_trust_level_returns_error_tool_result(self) -> None:
-        bridge, _ = _make_bridge()
-        agent = _make_agent(trust_level=TrustLevel.main)  # 'main', not 'mcp'
+    async def test_public_trust_level_blocked_on_bundled_server(self) -> None:
+        # public-trust agents cannot call any MCP tool, even bundled ones.
+        bridge, _ = _make_bridge(manifest=_make_manifest(trust_tier="bundled"))
+        agent = _make_agent(trust_level=TrustLevel.public)
+
+        result = await bridge.execute(
+            server_id="test-server",
+            tool_name="tool",
+            params={},
+            agent_config=agent,
+            session_key="sess",
+            trace_id="tr4",
+        )
+
+        assert result.success is False
+        assert "trust level" in (result.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_main_trust_allowed_on_bundled_server(self) -> None:
+        # main-trust agents may call bundled MCP tools (bundled = co-deployed, trusted).
+        bridge, _ = _make_bridge(manifest=_make_manifest(trust_tier="bundled"))
+        agent = _make_agent(trust_level=TrustLevel.main)
+
+        result = await bridge.execute(
+            server_id="test-server",
+            tool_name="tool",
+            params={},
+            agent_config=agent,
+            session_key="sess",
+            trace_id="tr4",
+        )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_main_trust_blocked_on_non_bundled_server(self) -> None:
+        # main-trust agents cannot call user_installed or auto_discovered MCP tools.
+        bridge, _ = _make_bridge(manifest=_make_manifest(trust_tier="user_installed"))
+        agent = _make_agent(trust_level=TrustLevel.main)
 
         result = await bridge.execute(
             server_id="test-server",

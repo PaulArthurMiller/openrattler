@@ -196,11 +196,30 @@ class MCPToolBridge:
 
             # ------------------------------------------------------------------
             # Step 2: Trust level check
+            # Bundled MCP servers (co-deployed, repo-checked) may be invoked by
+            # main-trust agents — they are explicitly installed and trusted by
+            # the system owner.  Non-bundled servers (user_installed,
+            # auto_discovered) still require the mcp trust level, which is only
+            # granted to agents that live within the MCP layer itself.
             # ------------------------------------------------------------------
-            if agent_config.trust_level != TrustLevel.mcp:
+            is_bundled = manifest.trust_tier == "bundled"
+            if is_bundled:
+                _BUNDLED_ALLOWED = frozenset(
+                    {TrustLevel.mcp, TrustLevel.main, TrustLevel.security, TrustLevel.local}
+                )
+                allowed = agent_config.trust_level in _BUNDLED_ALLOWED
+            else:
+                allowed = agent_config.trust_level == TrustLevel.mcp
+            if not allowed:
+                _tier_note = (
+                    "bundled MCP servers require 'main' trust or higher"
+                    if is_bundled
+                    else "non-bundled MCP servers require 'mcp' trust"
+                )
                 raise PermissionError(
-                    f"Agent trust level '{agent_config.trust_level.value}' cannot invoke MCP "
-                    f"tools; requires trust level 'mcp'"
+                    f"Agent trust level '{agent_config.trust_level.value}' cannot invoke "
+                    f"MCP tools on '{server_id}' (trust_tier='{manifest.trust_tier}'): "
+                    f"{_tier_note}"
                 )
 
             # ------------------------------------------------------------------
