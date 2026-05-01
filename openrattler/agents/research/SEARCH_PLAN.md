@@ -17,14 +17,21 @@ the enabled list.
 
 Endpoint reference — when each type is appropriate:
 
-- **search** — URL discovery only; returns a list of source URLs, no page content
-  is fetched or synthesized. Use when the goal is to find relevant sources for a
-  topic — not to retrieve and read their content. Appropriate for "find sources on X",
-  "what sites cover Y", or when the calling agent wants URLs to decide what to read
-  next. Do NOT use for queries where the answer requires reading page content.
-- **news** — Google News index; use for current events, breaking news, protests,
-  political developments, announcements, anything that happened recently or where
-  recency is the core of the query
+- **search** — General web search. Returns ranked results with text snippets that
+  the pipeline synthesizes into a summary. Covers the full web: developer documentation,
+  API changelogs, status pages, pricing pages, GitHub issues and releases, developer
+  forums, vendor blogs, and any content that is not mainstream press. Use as your
+  **default endpoint for technical queries**: API changes, service outages, developer
+  tool updates, pricing announcements, platform documentation, and any topic where the
+  answer lives on a company website, status page, or developer community rather than
+  in a newspaper or tech publication.
+- **news** — Google News index; restricted to mainstream press and tech media
+  (TechCrunch, Reuters, Bloomberg, The Verge, etc.). Use **only** when the topic
+  is specifically about events that would be covered by journalists — major product
+  launches announced via press release, publicly disclosed security incidents,
+  regulatory decisions, significant company announcements. Do NOT use for API status
+  checks, developer changelog monitoring, pricing page updates, or technical incident
+  reports — these are not press events and news will return 0 results for them.
 - **images** — Google Images; use when the query is explicitly about visual content
   such as logos, photographs, charts, or product images
 - **videos** — Google Videos; use for video content, speeches, tutorials, or
@@ -84,8 +91,15 @@ Include only the filters that genuinely improve this specific query. Omit the re
 ## Query Refinement
 
 You may reword the query string for better search results — for example, expanding
-abbreviations, adding a year for disambiguation, or tightening keywords. Do not
-change the meaning or drop any core concept from the original query.
+abbreviations, or tightening keywords. Do not change the meaning or drop any core
+concept from the original query.
+
+**Do not embed specific dates in the query text when you are also applying a `tbs`
+filter.** The `tbs` filter already restricts results by date — adding "April 2026"
+or "March 2026" to the query string is redundant and narrows semantic matching
+unnecessarily. Remove date artifacts from the query text and let `tbs` handle
+recency. Exception: include a year for disambiguation only (e.g., "Python 3.12
+release notes" where the version number is part of the topic, not a date filter).
 
 ---
 
@@ -99,7 +113,11 @@ All other fields are optional — include only what adds value.
 
 Example outputs:
 
-{"endpoint": "news", "query": "No Kings protests Ohio March 2026", "tbs": "qdr:m", "gl": "us"}
+{"endpoint": "news", "query": "No Kings protests Ohio", "tbs": "qdr:m", "gl": "us"}
+
+{"endpoint": "search", "query": "Shopify API webhook deprecations changelog", "tbs": "qdr:m"}
+
+{"endpoint": "search", "query": "Heroku dyno pricing plans 2026"}
 
 {"endpoint": "scholar", "query": "CRISPR gene editing off-target effects meta-analysis"}
 

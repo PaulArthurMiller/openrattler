@@ -236,6 +236,27 @@ class ResearchAgent:
                 search_hits, request, trace_id, from_agent, to_agent, session_key
             )
 
+        # Phase 1b: News-to-search fallback.
+        # Google News has no coverage of niche technical topics (API status pages,
+        # changelogs, developer forums).  When news returns 0 hits, retry with
+        # the general "search" endpoint which indexes those sources, then hand off
+        # to _build_url_discovery_result (which synthesizes from snippets).
+        if not search_hits and search_params.endpoint == "news":
+            from openrattler.tools.search.web_search_tool import WebSearchParams
+
+            fallback_params = WebSearchParams(
+                query=search_params.query,
+                endpoint="search",
+            )
+            logger.info(
+                "_run_pipeline: news returned 0 hits; retrying with search endpoint for query=%r",
+                search_params.query,
+            )
+            search_hits = await self._web_search(fallback_params)
+            return await self._build_url_discovery_result(
+                search_hits, request, trace_id, from_agent, to_agent, session_key
+            )
+
         # Phase 2: Fetch each hit, applying safety constraints.
         # snippet is passed as fallback content when fetch fails (403, paywall, etc.).
         fetched: list[dict[str, Any]] = []
