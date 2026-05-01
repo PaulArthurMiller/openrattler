@@ -19,6 +19,32 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /debug 2026-04-28 — Research Pipeline News-to-Search Fallback ✅
+
+**Branch:** `claude-fix-research-news-fallback` | **PR:** open
+
+Fixed recurring heartbeat research failure: all API-monitoring queries returned `result_count=0` with "No sources retrieved" stubs.
+
+**Root cause:**
+
+The `news` endpoint (used for recent/current queries) returns 0 results for niche technical topics — API status pages, changelogs, developer forum posts, and service incident reports are not indexed by Google News. They live on status pages, GitHub, and developer blogs, which only appear in the general `search` index.
+
+The snippet-fallback fix from PR #76 only helps when Serper returns results with snippets. When `response.news` is genuinely empty (0 items), there are no snippets to fall back to, and synthesis gets "No sources were retrieved for this query."
+
+**Evidence from logs:** A 3-second gap between the Serper credit warning and the synthesis httpx POST, with zero web-fetch log entries in between — confirming `search_hits == []`.
+
+**Change made:**
+
+- **`openrattler/agents/research/agent.py`** — Phase 1b added to `_run_pipeline`: when `endpoint='news'` returns 0 hits, automatically retries with `endpoint='search'` (general web) and routes through `_build_url_discovery_result`. The `search` endpoint indexes status pages, changelogs, and dev blogs. No change to the normal news path.
+- **`tests/test_agents/test_research/test_agent.py`** — 3 new `TestNewsFallback` tests: fallback triggers on 0 news hits, fallback does NOT trigger when news has results, both-empty returns a response UM. Updated `test_returns_error_um_when_sanitizer_rejects` (was relying on empty-news path that now goes through fallback).
+- **`tests/test_agents/test_research/test_search_planning.py`** — Updated `test_search_plan_prompt_not_used_during_synthesis` to return a news hit so the fallback doesn't fire and synthesis is still the second provider.complete call.
+
+**Verified:** 2289 tests passing, mypy clean.
+
+**Note:** Serper account has only 24 credits remaining. Even with this fix, results will be thin until credits are replenished — the fallback improves coverage but can't manufacture content Serper doesn't index.
+
+---
+
 ## /debug 2026-04-26 — Heartbeat Weather + Research Quality Fix ✅
 
 **Branch:** `claude-fix-weather-research` | **PR:** open

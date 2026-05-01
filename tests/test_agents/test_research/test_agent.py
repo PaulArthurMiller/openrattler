@@ -267,7 +267,18 @@ class TestRunPipeline:
     async def test_returns_error_um_when_sanitizer_rejects(self, tmp_path: Path) -> None:
         """If sanitizer returns ResearchError, agent returns type='error' UM."""
         agent, _ = _make_agent(tmp_path)
-        agent._web_search = AsyncMock(return_value=[])
+        # Return a news hit so the normal fetch+synthesize path is taken (not the fallback).
+        # The fallback only fires when news returns 0 hits; here we give it one.
+        fake_hit = {
+            "url": "https://example.com/article",
+            "title": "Article",
+            "snippet": "Some snippet.",
+            "source_type": "general",
+        }
+        agent._web_search = AsyncMock(return_value=[fake_hit])
+        agent._fetch_url = AsyncMock(
+            return_value=("https://example.com/article", "text/html", b"Article body.")
+        )
         # Inject an injection pattern that Stage 1 will catch
         agent._synthesize = AsyncMock(return_value="exec(malicious) rm -rf / sudo system()")
 
@@ -336,3 +347,101 @@ class TestSessionIsolation:
         transcript_files = [f for f in tmp_path.rglob("*.jsonl") if f.name != "audit.jsonl"]
         print(f"[TestSessionIsolation] non-audit jsonl files: {transcript_files}")
         assert transcript_files == []
+
+
+# ---------------------------------------------------------------------------
+# News-to-search fallback
+# ---------------------------------------------------------------------------
+
+
+class TestNewsFallback:
+    """When news endpoint returns 0 hits, pipeline retries with search endpoint."""
+
+    async def test_fallback_to_search_when_news_returns_empty(self, tmp_path: Path) -> None:
+        """news returning 0 hits triggers a retry via the search endpoint."""
+        from openrattler.tools.search.web_search_tool import WebSearchParams
+
+        agent, _ = _make_agent(tmp_path)
+
+        # First call (news): returns nothing.  Second call (search): returns a hit with snippet.
+        search_call_count = 0
+        fake_hit = {
+            "url": "https://status.example.com/api-outage",
+            "title": "API Status Update",
+            "snippet": "The API experienced an outage on April 15.",
+            "source": "status.example.com",
+            "date": "Apr 15, 2026",
+            "source_type": "general",
+        }
+
+        async def mock_web_search(params: "WebSearchParams") -> list[dict[str, Any]]:
+            nonlocal search_call_count
+            search_call_count += 1
+            if params.endpoint == "news":
+                return []
+            # search fallback
+            return [fake_hit]
+
+        agent._web_search = mock_web_search  # type: ignore[method-assign]
+        agent._synthesize = AsyncMock(return_value="API was down briefly on April 15.")
+
+        request = _make_request(query="ExampleAPI outage April 2026")
+        um = await agent.run(request, str(uuid.uuid4()))
+        print(
+            f"[TestNewsFallback] search_calls={search_call_count}, UM type={um.type}, "
+            f"params keys={list(um.params.keys())}"
+        )
+        assert search_call_count == 2, "Expected news call then search fallback call"
+        assert um.type == "response"
+
+    async def test_no_fallback_when_news_returns_hits(self, tmp_path: Path) -> None:
+        """When news returns results, the search fallback is NOT triggered."""
+        from openrattler.tools.search.web_search_tool import WebSearchParams
+
+        agent, _ = _make_agent(tmp_path)
+
+        search_call_count = 0
+        fake_hit = {
+            "url": "https://news.example.com/article",
+            "title": "Leonardo.ai Outage Report",
+            "snippet": "Leonardo.ai experienced a brief API disruption.",
+            "source": "TechNews",
+            "date": "Apr 20, 2026",
+            "source_type": "general",
+        }
+
+        async def mock_web_search(params: "WebSearchParams") -> list[dict[str, Any]]:
+            nonlocal search_call_count
+            search_call_count += 1
+            return [fake_hit]
+
+        agent._web_search = mock_web_search  # type: ignore[method-assign]
+        agent._fetch_url = AsyncMock(
+            return_value=("https://news.example.com/article", "text/html", b"Article text here.")
+        )
+        agent._synthesize = AsyncMock(return_value="Leonardo.ai had a disruption.")
+
+        request = _make_request(query="Leonardo.ai API outage April 2026")
+        um = await agent.run(request, str(uuid.uuid4()))
+        print(
+            f"[TestNewsFallback] no-fallback: search_calls={search_call_count}, UM type={um.type}"
+        )
+        assert search_call_count == 1, "Should only call search once when news returns hits"
+        assert um.type == "response"
+
+    async def test_returns_response_um_when_both_endpoints_empty(self, tmp_path: Path) -> None:
+        """When both news and search return nothing, returns a response UM (not an error)."""
+        from openrattler.tools.search.web_search_tool import WebSearchParams
+
+        agent, _ = _make_agent(tmp_path)
+
+        async def mock_web_search(params: "WebSearchParams") -> list[dict[str, Any]]:
+            return []
+
+        agent._web_search = mock_web_search  # type: ignore[method-assign]
+        agent._synthesize = AsyncMock(return_value="No information found for this query.")
+
+        request = _make_request(query="Extremely niche API nobody has heard of")
+        um = await agent.run(request, str(uuid.uuid4()))
+        print(f"[TestNewsFallback] both-empty: UM type={um.type}")
+        assert um.type == "response"

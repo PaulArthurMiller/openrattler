@@ -406,8 +406,17 @@ class TestPlanSearchPipelineIntegration:
 
         with patch(
             "openrattler.tools.search.web_search_tool.web_search",
-            new=AsyncMock(return_value={"status": "ok", "results": []}),
+            new=AsyncMock(
+                return_value={
+                    "status": "ok",
+                    # Return one hit so the news-to-search fallback doesn't fire.
+                    # _web_fetch is mocked to None so synthesis is still called with
+                    # empty content (which is the second provider.complete call we verify).
+                    "results": [{"url": "https://example.com/", "title": "T", "snippet": "s"}],
+                }
+            ),
         ):
+            agent._web_fetch = AsyncMock(return_value=None)
             await agent.run(_make_request(), trace_id="test-plan-002")
 
         # Second call is synthesis — its system message must be SKILL.md, not SEARCH_PLAN.md
