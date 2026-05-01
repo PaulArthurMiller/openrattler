@@ -19,6 +19,39 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /smoketest 2026-05-01 — Research Pipeline & MCP Weather Live Test ✅
+
+**Branch:** `fix/smoketest-2026-05-01` | **PR:** pending
+
+Smoke-tested research agent and heartbeat pipeline after 2026-04-28 news-to-search fallback fix.
+
+**Bug found and fixed:**
+
+- **MCPToolBridge blocked `main`-trust agents from calling any MCP tool** (`openrattler/mcp/bridge.py`).
+  - Root cause: step-2 trust check required `trust_level=='mcp'` exactly, blocking all main-agent calls even when the tool was explicitly in `trust_defaults.main`.
+  - Fix: bundled MCP servers (co-deployed, repo-checked) now accept `main`/`security`/`local` trust. Non-bundled still require `mcp` trust.
+  - This completes the April 26 weather fix, which added weather tools to `trust_defaults.main` but missed the bridge gate.
+  - Verified: heartbeat weather call now succeeds — real NWS API calls through to `api.weather.gov`.
+
+**Heartbeat results (with fix applied):**
+- Weather: ✅ Frost alert for Bryan OH triggered (32°F tonight), suggested activities
+- Research (Shopify webhooks): ✅ 3 results, synthesized from snippets
+- Research (Leonardo.ai): ✅ 3 results, synthesized
+- Research (coloring book market): ✅ 3 results, pricing data $45–80/unit
+- Email dispatched: ✅
+
+**Interactive Corvus queries tested:**
+- Anthropic developer updates: ✅ Claude Opus 4.7 GA, April 23 incident (CC/Agent SDK/Cowork), useful synthesis
+- Python 3.14 news: ✅ RC1 status, t-strings, free-threaded improvements, solid results
+- Upwork Python developer postings: ⚠️ Login wall — Upwork not crawlable without auth. Corvus correctly identified the limitation and proposed RSS feed / API alternatives.
+
+**Ongoing observation (not a bug — expected behavior):**
+Research agent synthesizes from Serper snippets rather than full page content. This is intended behavior post-April-26 fix (fetch fails/403 → snippet fallback). Quality is good for most queries. Some technical docs pages would benefit from direct fetch but are behind JS-render/paywall.
+
+**Tests:** 2291 passing (was 2289 baseline; 2 net new tests)
+
+---
+
 ## /debug 2026-04-28 — Research Pipeline News-to-Search Fallback ✅
 
 **Branch:** `claude-fix-research-news-fallback` | **PR:** open
