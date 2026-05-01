@@ -33,15 +33,15 @@ The snippet-fallback fix from PR #76 only helps when Serper returns results with
 
 **Evidence from logs:** A 3-second gap between the Serper credit warning and the synthesis httpx POST, with zero web-fetch log entries in between — confirming `search_hits == []`.
 
-**Change made:**
+**Changes made:**
 
 - **`openrattler/agents/research/agent.py`** — Phase 1b added to `_run_pipeline`: when `endpoint='news'` returns 0 hits, automatically retries with `endpoint='search'` (general web) and routes through `_build_url_discovery_result`. The `search` endpoint indexes status pages, changelogs, and dev blogs. No change to the normal news path.
+- **`openrattler/agents/research/SEARCH_PLAN.md`** — Corrected the `search` endpoint description (was wrong: "URL discovery only, no synthesis" — snippets ARE synthesized). Made `search` the explicit default for technical queries; `news` explicitly wrong for API/developer content. Added guidance: don't embed dates in query text when `tbs` is already filtering by date. Updated examples to show correct usage.
+- **`openrattler/agents/research/SKILL.md`** — Corrected the `search` endpoint behaviour description. Added "No sources retrieved" guidance: be brief (2–3 sentences), name the authoritative direct source, no generic caveats.
 - **`tests/test_agents/test_research/test_agent.py`** — 3 new `TestNewsFallback` tests: fallback triggers on 0 news hits, fallback does NOT trigger when news has results, both-empty returns a response UM. Updated `test_returns_error_um_when_sanitizer_rejects` (was relying on empty-news path that now goes through fallback).
 - **`tests/test_agents/test_research/test_search_planning.py`** — Updated `test_search_plan_prompt_not_used_during_synthesis` to return a news hit so the fallback doesn't fire and synthesis is still the second provider.complete call.
 
 **Verified:** 2289 tests passing, mypy clean.
-
-**Note:** Serper account has only 24 credits remaining. Even with this fix, results will be thin until credits are replenished — the fallback improves coverage but can't manufacture content Serper doesn't index.
 
 ---
 
