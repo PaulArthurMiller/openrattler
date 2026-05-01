@@ -319,7 +319,7 @@ class TestMemoryConfig:
 
     def test_default_narrative_max_write_tokens(self) -> None:
         cfg = MemoryConfig()
-        assert cfg.narrative_max_write_tokens == 300
+        assert cfg.narrative_max_write_tokens == 1000
 
     def test_default_user_profile_max_tokens(self) -> None:
         cfg = MemoryConfig()
