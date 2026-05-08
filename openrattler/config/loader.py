@@ -332,11 +332,11 @@ class MemoryConfig(BaseModel):
         ),
     )
     narrative_max_write_tokens: int = Field(
-        default=300,
+        default=1000,
         ge=1,
         description=(
             "Maximum tokens allowed in a single write to MEMORY.md. "
-            "Keeps individual entries concise. Default 300."
+            "Keeps individual entries concise. Default 1000."
         ),
     )
     user_profile_max_tokens: int = Field(
