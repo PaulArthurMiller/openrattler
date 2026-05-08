@@ -454,7 +454,10 @@ class ApplicationContext:
         except asyncio.CancelledError:
             pass
         finally:
-            await self._prompt_memory_update_on_shutdown()
+            try:
+                await self._prompt_memory_update_on_shutdown()
+            except Exception:
+                logger.exception("ApplicationContext: shutdown memory prompt failed")
             await self.stop()
 
     async def _prompt_memory_update_on_shutdown(self) -> None:
@@ -477,7 +480,12 @@ class ApplicationContext:
                     )
                 },
             )
-            await self._runtime.process_message(session, msg)
+            await asyncio.wait_for(
+                self._runtime.process_message(session, msg),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("ApplicationContext: shutdown memory prompt timed out after 30s")
         except Exception:
             logger.exception("ApplicationContext: shutdown memory prompt failed")
 
