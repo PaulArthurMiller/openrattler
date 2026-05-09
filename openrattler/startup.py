@@ -456,9 +456,12 @@ class ApplicationContext:
         finally:
             try:
                 await self._prompt_memory_update_on_shutdown()
-            except Exception:
+            except BaseException:
+                # CancelledError is BaseException, not Exception — catch it here so
+                # stop() is always reached even on a second Ctrl+C during cleanup.
                 logger.exception("ApplicationContext: shutdown memory prompt failed")
-            await self.stop()
+            finally:
+                await self.stop()
 
     async def _prompt_memory_update_on_shutdown(self) -> None:
         """Send a shutdown prompt asking Corvus to update memory before the app stops."""
@@ -486,7 +489,9 @@ class ApplicationContext:
             )
         except asyncio.TimeoutError:
             logger.warning("ApplicationContext: shutdown memory prompt timed out after 30s")
-        except Exception:
+        except BaseException:
+            # CancelledError is BaseException — swallow it here so the caller's
+            # finally block always reaches stop() and releases the gateway port.
             logger.exception("ApplicationContext: shutdown memory prompt failed")
 
     # ------------------------------------------------------------------
