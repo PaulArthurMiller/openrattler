@@ -24,9 +24,10 @@ TOKEN LIMITS
 - ``user_profile_max_tokens`` caps the total size of USER.md.
 - ``identity_max_tokens`` caps the total size of IDENTITY.md.
 
-Limits come from ``MemoryConfig`` (defaults: 300 write / 2000 file / 500 user / 500 identity).
-The tool response always reports current token usage so the agent knows when
-to prune.  Near-80% capacity triggers an explicit pruning suggestion.
+Limits come from ``MemoryConfig`` (defaults: 1000 write / 4000 file / 500 user / 500 identity).
+The per-write limit applies to append mode only — replace mode is bounded only by the
+file limit so consolidation is never blocked.  The tool response always reports current
+token usage so the agent knows when to prune.  Near-80% capacity triggers a pruning suggestion.
 
 HEARTBEAT.MD ELEVATED APPROVAL PATH
 -------------------------------------
@@ -49,9 +50,10 @@ TOKEN LIMITS
 - ``user_profile_max_tokens`` caps the total size of USER.md.
 - ``identity_max_tokens`` caps the total size of IDENTITY.md.
 
-Limits come from ``MemoryConfig`` (defaults: 300 write / 2000 file / 500 user / 500 identity).
-The tool response always reports current token usage so the agent knows when
-to prune.  Near-80% capacity triggers an explicit pruning suggestion.
+Limits come from ``MemoryConfig`` (defaults: 1000 write / 4000 file / 500 user / 500 identity).
+The per-write limit applies to append mode only — replace mode is bounded only by the
+file limit so consolidation is never blocked.  The tool response always reports current
+token usage so the agent knows when to prune.  Near-80% capacity triggers a pruning suggestion.
 
 SECURITY NOTES
 --------------
@@ -190,8 +192,9 @@ class NarrativeMemoryTools:
                 name="update_memory_narrative",
                 description=(
                     "Update the working memory narrative (MEMORY.md). "
-                    "Use 'append' to add new content, 'replace' to rewrite the entire file "
-                    "(use replace to prune when approaching the token limit)."
+                    "Use 'append' to add new content (subject to per-write token limit). "
+                    "Use 'replace' to rewrite the entire file — replace mode has NO "
+                    "per-write limit, making it the correct mode for consolidation or pruning."
                 ),
                 parameters={
                     "type": "object",
@@ -200,9 +203,10 @@ class NarrativeMemoryTools:
                             "type": "string",
                             "enum": ["append", "replace"],
                             "description": (
-                                "'append' adds content to the end of MEMORY.md. "
-                                "'replace' rewrites the entire file — use this to prune "
-                                "and condense when approaching the token limit."
+                                "'append' adds content to the end of MEMORY.md "
+                                "(subject to per-write token limit). "
+                                "'replace' rewrites the entire file with NO per-write limit — "
+                                "use this to consolidate or prune when approaching the file limit."
                             ),
                         },
                         "content": {
@@ -475,7 +479,7 @@ class NarrativeMemoryTools:
             return f"Error: failed to write MEMORY.md: {exc}"
 
         # Build status response
-        return self._status_message("MEMORY.md", total_tokens, max_file)
+        return self._status_message("MEMORY.md", total_tokens, max_file, max_write if mode == "append" else None)
 
     async def _update_user_profile(self, content: str) -> str:
         """Handler for update_user_profile.
@@ -774,12 +778,14 @@ class NarrativeMemoryTools:
         return f"(no diff — content identical)"
 
     @staticmethod
-    def _status_message(filename: str, used_tokens: int, max_tokens: int) -> str:
+    def _status_message(filename: str, used_tokens: int, max_tokens: int, max_write: int | None = None) -> str:
         """Build a status string reporting token usage with optional pruning hint."""
         msg = f"Written. {filename} is now approximately {used_tokens}/{max_tokens} tokens."
+        if max_write is not None:
+            msg += f" Append limit: {max_write} tokens. Replace mode has no per-write limit."
         if used_tokens >= int(max_tokens * _PRUNE_WARNING_THRESHOLD):
             msg += (
-                f" File is nearing its limit — use replace mode to condense "
-                f"before the next write."
+                f" File is nearing its limit — use replace mode (no per-write limit) "
+                f"to consolidate and prune before the next append."
             )
         return msg
