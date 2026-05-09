@@ -439,6 +439,31 @@ class TestToolsBlock:
         assert "`local`" in local_section
         assert "`security`" in local_section
 
+    async def test_authorized_tiers_for_mcp(self, tmp_path: Path) -> None:
+        # mcp trust = main and above are authorized (not empty!).
+        # Regression for bug where _TRUST_ORDER[mcp]=4 caused _authorized_tiers
+        # to return [] for mcp-level tools, making them appear "not enabled".
+        reg = ToolRegistry()
+        reg.register(
+            ToolDefinition(
+                name="mcp_tool",
+                description="MCP weather tool",
+                parameters={"type": "object", "properties": {}, "required": []},
+                trust_level_required=TrustLevel.mcp,
+            )
+        )
+        config = _make_config(allowed=["mcp_tool"])
+        loader = _make_loader(tmp_path, config=config, registry=reg)
+        prompt = await loader.load_system_prompt()
+        mcp_section_start = prompt.index("`mcp` trust required")
+        mcp_section = prompt[mcp_section_start : mcp_section_start + 200]
+        # main, local, and security are all authorized to call mcp-level tools.
+        assert "`main`" in mcp_section
+        assert "`local`" in mcp_section
+        assert "`security`" in mcp_section
+        # public is not authorized.
+        assert "`public`" not in mcp_section
+
     async def test_approval_flag_shown(self, tmp_path: Path) -> None:
         config = _make_config(allowed=["local_tool"])
         reg = _make_registry_multi()
