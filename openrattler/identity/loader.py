@@ -84,13 +84,23 @@ _TRUST_ORDER: dict[TrustLevel, int] = {t: i for i, t in enumerate(_AGENT_TIERS)}
 # mcp gets a high rank so it sorts last if it ever appears.
 _TRUST_ORDER[TrustLevel.mcp] = len(_AGENT_TIERS)
 
+# Permission rank for mcp, matching permissions.py (public=0, mcp=1, main=2).
+# _TRUST_ORDER gives mcp rank 4 for display-sort purposes; that rank must NOT
+# be used for authorization checks or no agent tier would qualify.
+_MCP_PERM_RANK: int = 1
+
 
 def _authorized_tiers(trust_level_required: TrustLevel) -> list[str]:
     """Return agent tier names that meet or exceed *trust_level_required*.
 
     The ``mcp`` tier is excluded — it is a server tier, not an agent tier.
+    For ``TrustLevel.mcp`` tools the permission rank (1) is used rather than
+    the display-sort rank (4) so that ``main`` and above show as authorized.
     """
-    req_rank = _TRUST_ORDER.get(trust_level_required, 0)
+    if trust_level_required == TrustLevel.mcp:
+        req_rank = _MCP_PERM_RANK
+    else:
+        req_rank = _TRUST_ORDER.get(trust_level_required, 0)
     return [t.value for t in _AGENT_TIERS if _TRUST_ORDER[t] >= req_rank]
 
 
