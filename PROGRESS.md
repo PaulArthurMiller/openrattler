@@ -2614,3 +2614,38 @@ The `complete()` interface uses OpenAI's message format as the canonical standar
 - **CalibrationAgent Subagent** — prerequisite for Bayesian heartbeat evaluation loop
 - **Session Lookup Tool** — prerequisite for CalibrationAgent (reads CLI session turns)
 - **`calibration_state.json` Schema** — prerequisite for CalibrationAgent
+
+---
+
+## /debug 2026-05-10 — Google Tools Missing from CLI ✅
+
+**Branch:** `claude-fix-cli-google-tools` | **PR #86:** merged
+
+Corvus consistently reported Google Calendar, Drive, Gmail, and Tasks as missing
+from his tool list when accessed via `openrattler chat` (the CLI path), despite
+them working correctly in `openrattler run` (the full server path).
+
+**Root cause:**
+
+`CLIChat.open()` and `build_application()` are two parallel startup paths that
+each build a fresh `ToolRegistry` from scratch. The 41.x Google tool registration
+block was added only to `build_application()`. The CLI path (`CLIChat.open()`)
+never received the matching block, so Google tools were invisible on that path
+regardless of config or server restarts.
+
+**Changes made:**
+
+- **`openrattler/cli/chat.py`** — Added the `if config.google.enabled:` registration
+  block (mirroring `startup.py`) to `CLIChat.open()`, right after `ResearchTools`
+  registration. Registers CalendarToolHandler, DriveToolHandler, GmailToolHandler,
+  and TasksToolHandler using lazy imports, identical to the server path.
+- **`.claude/TOOL_BUILDING_GUIDE.md`** — Added a prominent warning to Step 2 and
+  the Quick Reference: both `build_application` (startup.py) and `CLIChat.open()`
+  (cli/chat.py) must be updated when a new tool group is added. They are parallel
+  registry-build paths; missing either makes the tool invisible on that path.
+
+**Tests:** 2297 passing, 2 skipped (same baseline).
+
+**Pattern to remember:**
+Any new tool group must be registered in both `startup.py` and `cli/chat.py`.
+The TOOL_BUILDING_GUIDE.md Step 2 and Quick Reference now call this out explicitly.
