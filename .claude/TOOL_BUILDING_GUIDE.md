@@ -195,9 +195,13 @@ def register_my_tools(registry: ToolRegistry, handler: MyToolHandler) -> None:
     registry.register(MY_TOOL_DEF, handler.handle)
 ```
 
-### Step 2: Wire into startup.py
+### Step 2: Wire into startup.py AND cli/chat.py
 
-Add the import and registration call to `openrattler/startup.py` in the correct position in the wiring sequence. The order matters — tools must be registered before step 11b (where `_resolve_agent_tools()` runs, at line ~825).
+> ⚠️ **Both files must be updated.** `build_application()` in `startup.py` (the `openrattler run` path) and `CLIChat.open()` in `cli/chat.py` (the `openrattler chat` path) are two parallel startup paths that each build a fresh `ToolRegistry` independently. Every new tool group added to one must also be added to the other. Missing either means the tool is invisible on that path — and the CLI path is the one you test interactively, so the gap is easy to miss.
+
+Add the import and registration call to **both** files. The wiring sequence and code are identical; the only difference is that `startup.py` uses a variable named `audit` while `cli/chat.py` uses `audit_log`.
+
+Add it to `openrattler/startup.py` in the correct position in the wiring sequence. The order matters — tools must be registered before step 11b (where `_resolve_agent_tools()` runs, at line ~825).
 
 **For always-on tools** — add after step 10 (SocialTools/NarrativeMemoryTools), before step 11:
 
@@ -566,7 +570,8 @@ ToolDefinition fields checklist:
 
 Registration pipeline (5 steps, all required):
   1. Write tool code with correct trust_level_required + action_level
-  2. Wire into startup.py at correct position (before step 11b)
+  2. Wire into BOTH startup.py (build_application) AND cli/chat.py (CLIChat.open())
+     ← both are parallel registry-build paths; missing either = invisible on that path
   3. Add name to ~/.openrattler/config.json → tools.trust_defaults.main
   4. Add name to openrattler/config/loader.py → ToolsConfig.trust_defaults["main"]
   5. [Feature-flagged] Enable flag in config.json; document the requirement
