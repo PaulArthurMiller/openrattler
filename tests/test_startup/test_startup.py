@@ -728,3 +728,88 @@ class TestAlertDispatch:
         await on_urgent(msg)
 
         await ctx.stop()
+
+
+# ---------------------------------------------------------------------------
+# TestShutdownReliability
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownReliability:
+    """Tests for the hard-exit watchdog and per-component shutdown timeouts."""
+
+    async def test_force_exit_after_calls_os_exit(
+        self, tmp_path: Path, stub_provider: _StubProvider, empty_mcp_dir: Path
+    ) -> None:
+        ctx = await _make_context(tmp_path, stub_provider)
+        with patch("openrattler.startup.os._exit") as mock_exit:
+            # Use a very short timeout so the test runs fast.
+            await ctx._force_exit_after(0.01)
+        mock_exit.assert_called_once_with(0)
+
+    async def test_stop_continues_when_scheduler_times_out(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        ctx = await _make_context(tmp_path, stub_provider)
+        mock_scheduler = AsyncMock()
+
+        async def _hang() -> None:
+            await asyncio.sleep(999)
+
+        mock_scheduler.stop = _hang
+        ctx._scheduler = mock_scheduler
+
+        # Use a tiny component timeout so the test completes quickly.
+        with patch("openrattler.startup._COMPONENT_STOP_TIMEOUT", 0.05):
+            await asyncio.wait_for(ctx.stop(), timeout=1.0)
+
+    async def test_stop_continues_when_gateway_times_out(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        ctx = await _make_context(tmp_path, stub_provider)
+        mock_gateway = AsyncMock()
+
+        async def _hang() -> None:
+            await asyncio.sleep(999)
+
+        mock_gateway.stop = _hang
+        ctx._gateway = mock_gateway
+
+        with patch("openrattler.startup._COMPONENT_STOP_TIMEOUT", 0.05):
+            await asyncio.wait_for(ctx.stop(), timeout=1.0)
+
+    async def test_stop_continues_when_mcp_times_out(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        ctx = await _make_context(tmp_path, stub_provider)
+        mcp_mock = AsyncMock()
+
+        async def _hang() -> None:
+            await asyncio.sleep(999)
+
+        mcp_mock.disconnect_all = _hang
+        ctx._mcp_manager = mcp_mock
+
+        with patch("openrattler.startup._COMPONENT_STOP_TIMEOUT", 0.05):
+            await asyncio.wait_for(ctx.stop(), timeout=1.0)
+
+    async def test_watchdog_cancelled_on_clean_shutdown(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        """Watchdog task must not fire (os._exit not called) after a clean stop()."""
+        ctx = await _make_context(tmp_path, stub_provider)
+        await ctx.start()
+
+        with patch("openrattler.startup.os._exit") as mock_exit:
+            with patch("openrattler.startup._HARD_EXIT_TIMEOUT", 0.05):
+                # Simulate clean shutdown: stop() runs before watchdog fires.
+                watchdog = asyncio.create_task(ctx._force_exit_after(0.05))
+                await ctx.stop()
+                watchdog.cancel()
+                try:
+                    await watchdog
+                except asyncio.CancelledError:
+                    pass
+
+        # os._exit should NOT have been called — clean shutdown finished first.
+        mock_exit.assert_not_called()
