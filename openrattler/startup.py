@@ -124,6 +124,24 @@ _TOOL_NAME_UNSAFE_RE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.]")
 #: Maximum length for a sanitized tool name included in alert messages.
 _TOOL_NAME_MAX_LEN: int = 64
 
+# ---------------------------------------------------------------------------
+# Shutdown timing constants
+# ---------------------------------------------------------------------------
+
+#: Seconds given for the memory-update prompt before it is abandoned.
+#: Kept short so Ctrl+C exits quickly; second Ctrl+C skips it entirely.
+_MEMORY_PROMPT_TIMEOUT: float = 10.0
+
+#: Per-component timeout applied to each stop() call (scheduler, gateway, MCP).
+#: Components that do not respond in time are abandoned with a WARNING.
+_COMPONENT_STOP_TIMEOUT: float = 3.0
+
+#: Hard total budget from shutdown signal to process exit.
+#: If clean shutdown takes longer than this, os._exit(0) is called.
+#: Set long enough to cover memory-prompt + stop() under normal conditions
+#: (10s prompt + ~9s for components = comfortable 20s budget).
+_HARD_EXIT_TIMEOUT: float = 20.0
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -405,9 +423,14 @@ class ApplicationContext:
     async def stop(self) -> None:
         """Stop all components in reverse start order.
 
-        Safe to call even if ``start()`` was never called.
+        Safe to call even if ``start()`` was never called.  Each external
+        component (scheduler, gateway, MCP) is wrapped in
+        ``asyncio.wait_for(_COMPONENT_STOP_TIMEOUT)`` so a single unresponsive
+        component cannot block the whole shutdown sequence.  Timeouts are
+        logged as WARNINGs; the hard-exit watchdog in
+        ``run_until_interrupted()`` provides the final guarantee.
         """
-        # Cancel channel tasks.
+        # Cancel channel tasks first — they hold polling loops open.
         for task in self._channel_tasks:
             task.cancel()
         if self._channel_tasks:
@@ -415,15 +438,35 @@ class ApplicationContext:
         self._channel_tasks.clear()
 
         if self._scheduler is not None:
-            await self._scheduler.stop()
+            try:
+                await asyncio.wait_for(
+                    self._scheduler.stop(), timeout=_COMPONENT_STOP_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Scheduler.stop() timed out — continuing shutdown")
 
         if self._social_processor is not None:
-            await self._social_processor.disconnect()
+            try:
+                await asyncio.wait_for(
+                    self._social_processor.disconnect(), timeout=_COMPONENT_STOP_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("SocialProcessor.disconnect() timed out — continuing shutdown")
 
         if self._gateway is not None:
-            await self._gateway.stop()
+            try:
+                await asyncio.wait_for(
+                    self._gateway.stop(), timeout=_COMPONENT_STOP_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Gateway.stop() timed out — continuing shutdown")
 
-        await self._mcp_manager.disconnect_all()
+        try:
+            await asyncio.wait_for(
+                self._mcp_manager.disconnect_all(), timeout=_COMPONENT_STOP_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.warning("MCPManager.disconnect_all() timed out — continuing shutdown")
 
         await self._audit.log(
             AuditEvent(
@@ -434,7 +477,16 @@ class ApplicationContext:
         )
 
     async def run_until_interrupted(self) -> None:
-        """Start, block until Ctrl+C or SIGTERM, then stop cleanly."""
+        """Start, block until Ctrl+C or SIGTERM, then stop cleanly.
+
+        Shutdown sequence:
+        1. Wait for stop signal (Ctrl+C / SIGTERM / second Ctrl+C).
+        2. Start a hard-exit watchdog — if shutdown takes longer than
+           ``_HARD_EXIT_TIMEOUT`` seconds, ``os._exit(0)`` is called so the
+           port is always released and the process never hangs.
+        3. Ask Corvus to update memory (``_MEMORY_PROMPT_TIMEOUT`` seconds).
+        4. Stop all components with per-component timeouts (``_COMPONENT_STOP_TIMEOUT``).
+        """
         await self.start()
         loop = asyncio.get_running_loop()
         stop_future: asyncio.Future[None] = loop.create_future()
@@ -453,15 +505,39 @@ class ApplicationContext:
             await stop_future
         except asyncio.CancelledError:
             pass
-        finally:
+
+        # Watchdog: guarantee the process exits even if a component hangs.
+        watchdog = asyncio.create_task(self._force_exit_after(_HARD_EXIT_TIMEOUT))
+        try:
             try:
                 await self._prompt_memory_update_on_shutdown()
             except BaseException:
-                # CancelledError is BaseException, not Exception — catch it here so
-                # stop() is always reached even on a second Ctrl+C during cleanup.
+                # CancelledError is BaseException — swallow so stop() always runs.
                 logger.exception("ApplicationContext: shutdown memory prompt failed")
             finally:
                 await self.stop()
+        finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except asyncio.CancelledError:
+                pass
+
+    async def _force_exit_after(self, seconds: float) -> None:
+        """Force-exit the process after *seconds* if shutdown has not completed.
+
+        This is the shutdown safety net.  Under normal operation the watchdog
+        is cancelled before it fires.  If any component hangs (unresponsive
+        MCP subprocess, stuck WebSocket close, blocking thread) this fires and
+        calls ``os._exit(0)``, which releases all OS resources including the
+        gateway port — making the "port 8765 already in use" scenario impossible.
+        """
+        await asyncio.sleep(seconds)
+        logger.warning(
+            "ApplicationContext: shutdown timed out after %.0fs — forcing exit",
+            seconds,
+        )
+        os._exit(0)
 
     async def _prompt_memory_update_on_shutdown(self) -> None:
         """Send a shutdown prompt asking Corvus to update memory before the app stops."""
@@ -485,10 +561,13 @@ class ApplicationContext:
             )
             await asyncio.wait_for(
                 self._runtime.process_message(session, msg),
-                timeout=30.0,
+                timeout=_MEMORY_PROMPT_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            logger.warning("ApplicationContext: shutdown memory prompt timed out after 30s")
+            logger.warning(
+                "ApplicationContext: shutdown memory prompt timed out after %.0fs",
+                _MEMORY_PROMPT_TIMEOUT,
+            )
         except BaseException:
             # CancelledError is BaseException — swallow it here so the caller's
             # finally block always reaches stop() and releases the gateway port.
