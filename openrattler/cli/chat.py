@@ -310,6 +310,66 @@ class CLIChat:
         )
         ResearchTools(creator=creator, audit=audit_log).register_all(registry)
 
+        # --- Google Workspace tools ----------------------------------------
+        # Registered only when config.google.enabled is True.
+        # Mirrors the same block in startup.build_application() (step 10e) so the
+        # CLI path exposes exactly the same tool set as the full server.
+        if config.google.enabled:
+            from openrattler.integrations.google.auth import GoogleAuthManager
+            from openrattler.integrations.google.client import GoogleClientFactory
+            from openrattler.integrations.google.sanitizer import GoogleContentSanitizer
+            from openrattler.tools.builtin.calendar_tools import (
+                CalendarToolHandler,
+                register_calendar_tools,
+            )
+            from openrattler.tools.builtin.drive_tools import (
+                DriveToolHandler,
+                register_drive_tools,
+            )
+            from openrattler.tools.builtin.gmail_tools import (
+                GmailToolHandler,
+                register_gmail_tools,
+            )
+            from openrattler.tools.builtin.tasks_tools import (
+                TasksToolHandler,
+                register_tasks_tools,
+            )
+
+            google_auth_manager = GoogleAuthManager(config.google)
+            google_client_factory = GoogleClientFactory(google_auth_manager)
+            google_sanitizer = GoogleContentSanitizer(config=config.google, audit=audit_log)
+            calendar_handler = CalendarToolHandler(
+                client=google_client_factory,
+                config=config.google,
+                audit=audit_log,
+            )
+            register_calendar_tools(registry, calendar_handler)
+            drive_handler = DriveToolHandler(
+                client=google_client_factory,
+                sanitizer=google_sanitizer,
+                config=config.google,
+                audit=audit_log,
+            )
+            register_drive_tools(registry, drive_handler)
+            gmail_handler = GmailToolHandler(
+                client=google_client_factory,
+                sanitizer=google_sanitizer,
+                config=config.google,
+                audit=audit_log,
+            )
+            register_gmail_tools(registry, gmail_handler)
+            tasks_handler = TasksToolHandler(
+                client=google_client_factory,
+                sanitizer=google_sanitizer,
+                config=config.google,
+                audit=audit_log,
+            )
+            register_tasks_tools(registry, tasks_handler)
+            logger.info(
+                "Google Workspace integration enabled; "
+                "Calendar, Drive, Gmail, and Tasks tools registered."
+            )
+
         # --- Runtime -------------------------------------------------------
         executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
 
