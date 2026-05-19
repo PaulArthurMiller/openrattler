@@ -45,6 +45,26 @@ Planned three prerequisite build pieces for the Bayesian heartbeat evaluation lo
 
 ---
 
+## /build 2026-05-19 — Piece 42.2 TranscriptStore time-range + executor agent_config injection ✅
+
+**Branch:** `milestone-42.2-transcript-store-executor` | **PR:** pending
+
+**Files modified:**
+- `openrattler/storage/transcripts.py` — added `load_since(session_key, since_iso, max_turns)`:
+  parses ISO 8601 cutoff (naive strings treated as UTC), filters messages by timestamp,
+  caps to last `max_turns`, returns oldest-first. Empty list for non-existent sessions.
+- `openrattler/tools/executor.py` — Step 7 now checks `inspect.signature(handler).parameters`
+  for `agent_config`; injects the runtime `AgentConfig` into kwargs when declared. Zero
+  impact on existing handlers (none declare it). CPython caches the signature lookup.
+- `tests/test_storage/test_transcripts.py` — 8 new `TestLoadSince` tests
+- `tests/test_tools/test_executor.py` — 2 new `TestAgentConfigInjection` tests
+
+**Tests:** 10 new, 2324 total — all passing. mypy + black clean.
+
+**Next step:** Piece 42.3 — session_read_self + session_lookup tools
+
+---
+
 ## /build 2026-05-19 — Piece 42.1 SummarizerAgent ✅
 
 **Branch:** `milestone-42.1-summarizer-agent` | **PR:** pending

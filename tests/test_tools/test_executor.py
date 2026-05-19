@@ -537,6 +537,86 @@ class TestPiece395Integration:
 
 
 # ---------------------------------------------------------------------------
+# Piece 42.2 — agent_config injection into handlers that declare it
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigInjection:
+    """executor injects agent_config into handlers that declare the parameter."""
+
+    async def test_handler_without_agent_config_param_receives_normal_kwargs(
+        self, tmp_path: Path
+    ) -> None:
+        """A handler with no agent_config param: only tool_call.arguments are passed."""
+        received: dict = {}
+
+        async def plain_handler(**kwargs: object) -> str:
+            received.update(kwargs)
+            return "plain"
+
+        reg = ToolRegistry()
+        log = AuditLog(tmp_path / "audit.jsonl")
+        executor = ToolExecutor(reg, log)
+        tool_def = ToolDefinition(
+            name="plain_tool",
+            description="",
+            parameters={},
+            trust_level_required=TrustLevel.main,
+        )
+        reg.register(tool_def, plain_handler)
+
+        agent = _agent(tool_name="plain_tool")
+        call = ToolCall(tool_name="plain_tool", arguments={"x": 42}, call_id="inj-1")
+        result = await executor.execute(agent, call)
+
+        assert result.success is True
+        assert received == {"x": 42}, f"Expected only {{x: 42}}, got {received}"
+        assert "agent_config" not in received
+        print(f"[OK] plain handler received kwargs: {received}")
+
+    async def test_handler_with_agent_config_param_receives_injected_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A handler declaring agent_config receives the runtime AgentConfig object."""
+        from openrattler.models.agents import AgentConfig
+
+        received: dict = {}
+
+        async def config_aware_handler(x: int, agent_config: AgentConfig, **kwargs: object) -> str:
+            received["x"] = x
+            received["agent_config"] = agent_config
+            return "injected"
+
+        reg = ToolRegistry()
+        log = AuditLog(tmp_path / "audit.jsonl")
+        executor = ToolExecutor(reg, log)
+        tool_def = ToolDefinition(
+            name="config_tool",
+            description="",
+            parameters={},
+            trust_level_required=TrustLevel.main,
+        )
+        reg.register(tool_def, config_aware_handler)
+
+        agent = _agent(tool_name="config_tool")
+        # The LLM-visible arguments do NOT include agent_config
+        call = ToolCall(tool_name="config_tool", arguments={"x": 7}, call_id="inj-2")
+        result = await executor.execute(agent, call)
+
+        assert result.success is True
+        assert received["x"] == 7
+        assert isinstance(received["agent_config"], AgentConfig)
+        # Verify the injected config is exactly the one passed to execute()
+        assert received["agent_config"].agent_id == agent.agent_id
+        assert received["agent_config"].session_key == agent.session_key
+        print(
+            f"[OK] config_aware handler received agent_config: "
+            f"agent_id={received['agent_config'].agent_id}, "
+            f"session_key={received['agent_config'].session_key}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Heartbeat bypass — auto-approve during scheduled heartbeat sessions
 # ---------------------------------------------------------------------------
 

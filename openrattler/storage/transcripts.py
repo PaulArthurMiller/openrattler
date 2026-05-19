@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openrattler.models.messages import UniversalMessage
@@ -159,6 +160,46 @@ class TranscriptStore:
         path = _key_to_path(self._base, session_key)
         raw_lines: list[str] = await asyncio.to_thread(_sync_read_lines, path)
         return [UniversalMessage.model_validate_json(line) for line in raw_lines[-n:]]
+
+    async def load_since(
+        self,
+        session_key: str,
+        since_iso: str,
+        max_turns: int = 20,
+    ) -> list[UniversalMessage]:
+        """Return messages whose timestamp is >= *since_iso*, capped to *max_turns*.
+
+        Reads the whole file before filtering — acceptable for typical session
+        sizes; a backwards-seek optimisation can be added if very long sessions
+        become a concern.
+
+        Naive ``since_iso`` strings (no timezone designator) are treated as UTC.
+        Both the parsed cutoff and every stored message timestamp are UTC-aware
+        before comparison, so no mixed-offset arithmetic occurs.
+
+        Returns an empty list if the transcript does not exist or no messages
+        fall within the window.
+
+        Raises:
+            ValueError: If *session_key* fails validation or *since_iso* is not
+                a parseable ISO 8601 datetime string.
+        """
+        _validate_session_key(session_key)
+        try:
+            since_dt = datetime.fromisoformat(since_iso)
+        except ValueError:
+            raise ValueError(f"since_iso is not a valid ISO 8601 datetime string: {since_iso!r}")
+        # Normalize naive datetimes to UTC so comparison with stored timestamps is safe.
+        if since_dt.tzinfo is None:
+            since_dt = since_dt.replace(tzinfo=timezone.utc)
+
+        path = _key_to_path(self._base, session_key)
+        raw_lines: list[str] = await asyncio.to_thread(_sync_read_lines, path)
+        messages = [UniversalMessage.model_validate_json(line) for line in raw_lines]
+
+        filtered = [m for m in messages if m.timestamp >= since_dt]
+        # Cap to the last max_turns messages; return oldest-first.
+        return filtered[-max_turns:] if max_turns > 0 else []
 
     async def exists(self, session_key: str) -> bool:
         """Return ``True`` if a transcript file exists for *session_key*."""

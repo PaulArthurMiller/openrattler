@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -323,6 +324,142 @@ class TestPathSanitization:
 # ---------------------------------------------------------------------------
 # Concurrent appends
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# load_since
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSince:
+    """load_since(session_key, since_iso, max_turns) time-range filter."""
+
+    def _msg_at(self, dt: datetime, text: str = "x") -> UniversalMessage:
+        """Build a message with a specific timestamp (bypassing auto-timestamp)."""
+        m = create_message(
+            from_agent="channel:cli",
+            to_agent="agent:main:main",
+            session_key=_SESSION,
+            type="request",
+            operation="user_message",
+            trust_level="main",
+            params={"text": text},
+        )
+        # Override auto-generated timestamp
+        return m.model_copy(update={"timestamp": dt})
+
+    async def _store_messages_at(
+        self,
+        store: TranscriptStore,
+        times: list[datetime],
+        session: str = _SESSION,
+    ) -> list[UniversalMessage]:
+        """Append one message per timestamp; return the created messages."""
+        msgs = [self._msg_at(t, text=t.isoformat()) for t in times]
+        for m in msgs:
+            # Bypass the store.append validation/lock to write the pre-stamped message.
+            path = _key_to_path(store._base, session)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(m.model_dump_json() + "\n")
+        return msgs
+
+    async def test_load_since_filters_old_messages(self, tmp_path: Path) -> None:
+        """Messages before since_dt are excluded."""
+        store = TranscriptStore(tmp_path)
+        now = datetime.now(timezone.utc)
+        times = [
+            now - timedelta(hours=3),
+            now - timedelta(hours=1),
+            now,
+        ]
+        msgs = await self._store_messages_at(store, times)
+        cutoff = (now - timedelta(hours=2)).isoformat()
+
+        result = await store.load_since(_SESSION, cutoff)
+
+        print(f"[load_since] got {len(result)} messages; expected 2")
+        assert len(result) == 2
+        assert result[0].message_id == msgs[1].message_id
+        assert result[1].message_id == msgs[2].message_id
+
+    async def test_load_since_applies_max_turns_cap(self, tmp_path: Path) -> None:
+        """max_turns caps the result to the most recent N messages oldest-first."""
+        store = TranscriptStore(tmp_path)
+        now = datetime.now(timezone.utc)
+        times = [now - timedelta(minutes=i) for i in reversed(range(10))]
+        msgs = await self._store_messages_at(store, times)
+        past = (now - timedelta(hours=1)).isoformat()
+
+        result = await store.load_since(_SESSION, past, max_turns=3)
+
+        print(f"[load_since] capped to {len(result)} of 10 messages")
+        assert len(result) == 3
+        # Should be the 3 most recent, oldest-first
+        assert result[0].message_id == msgs[-3].message_id
+        assert result[-1].message_id == msgs[-1].message_id
+
+    async def test_load_since_future_cutoff_returns_empty(self, tmp_path: Path) -> None:
+        """A since_iso in the future returns an empty list."""
+        store = TranscriptStore(tmp_path)
+        now = datetime.now(timezone.utc)
+        await self._store_messages_at(store, [now - timedelta(minutes=5)])
+        future = (now + timedelta(hours=1)).isoformat()
+
+        result = await store.load_since(_SESSION, future)
+
+        print(f"[load_since] future cutoff → {len(result)} messages")
+        assert result == []
+
+    async def test_load_since_nonexistent_session_returns_empty(self, tmp_path: Path) -> None:
+        """Non-existent session → empty list, no exception."""
+        store = TranscriptStore(tmp_path)
+        cutoff = datetime.now(timezone.utc).isoformat()
+        result = await store.load_since("agent:main:ghost", cutoff)
+        assert result == []
+        print("[load_since] non-existent session returned []")
+
+    async def test_load_since_invalid_iso_raises_value_error(self, tmp_path: Path) -> None:
+        """An unparseable since_iso raises ValueError."""
+        store = TranscriptStore(tmp_path)
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await store.load_since(_SESSION, "not-a-date")
+
+    async def test_load_since_result_is_oldest_first(self, tmp_path: Path) -> None:
+        """Returned messages are in ascending timestamp order (oldest first)."""
+        store = TranscriptStore(tmp_path)
+        now = datetime.now(timezone.utc)
+        times = [now - timedelta(minutes=2), now - timedelta(minutes=1), now]
+        msgs = await self._store_messages_at(store, times)
+        cutoff = (now - timedelta(hours=1)).isoformat()
+
+        result = await store.load_since(_SESSION, cutoff)
+
+        timestamps = [m.timestamp for m in result]
+        print(f"[load_since] timestamps: {timestamps}")
+        assert timestamps == sorted(timestamps)
+        assert result[0].message_id == msgs[0].message_id
+        assert result[-1].message_id == msgs[-1].message_id
+
+    async def test_load_since_naive_since_iso_treated_as_utc(self, tmp_path: Path) -> None:
+        """Naive since_iso (no timezone) is treated as UTC, not rejected."""
+        store = TranscriptStore(tmp_path)
+        now = datetime.now(timezone.utc)
+        await self._store_messages_at(store, [now])
+        # Naive ISO string — no tz info
+        naive_cutoff = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
+        result = await store.load_since(_SESSION, naive_cutoff)
+
+        print(f"[load_since] naive cutoff: {naive_cutoff} → {len(result)} messages")
+        assert len(result) == 1
+
+    async def test_load_since_invalid_session_key_raises(self, tmp_path: Path) -> None:
+        """Invalid session_key raises ValueError before any file I/O."""
+        store = TranscriptStore(tmp_path)
+        cutoff = datetime.now(timezone.utc).isoformat()
+        with pytest.raises(ValueError):
+            await store.load_since("agent:main:evil/../path", cutoff)
 
 
 class TestConcurrentAppends:
