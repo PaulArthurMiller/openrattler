@@ -247,10 +247,15 @@ class ToolExecutor:
             return ToolResult(call_id=tool_call.call_id, success=False, error=error)
 
         try:
+            kwargs = dict(tool_call.arguments)
+            # Inject agent_config for handlers that declare it as a parameter.
+            # inspect.signature is CPython-cached per function — negligible overhead.
+            if "agent_config" in inspect.signature(handler).parameters:
+                kwargs["agent_config"] = agent_config
             if inspect.iscoroutinefunction(handler):
-                result = await handler(**tool_call.arguments)
+                result = await handler(**kwargs)
             else:
-                result = await asyncio.to_thread(handler, **tool_call.arguments)
+                result = await asyncio.to_thread(handler, **kwargs)
         except Exception as exc:
             error = str(exc) or type(exc).__name__
             await self._log(agent_config, tool_call, success=False, error=error)

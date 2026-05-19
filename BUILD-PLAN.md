@@ -1824,8 +1824,8 @@ verified to contain all required fields. `sessions_history` regression test gree
 
 ## Status
 
-Current milestone: **42.1 — complete**
-Piece 42.1: ✅ complete — PR open
-Piece 42.2: ⬜ not started
+Current milestone: **42.2 — complete**
+Piece 42.1: ✅ complete — merged
+Piece 42.2: ✅ complete — PR open
 Piece 42.3: ⬜ not started
 Last updated: 2026-05-19
