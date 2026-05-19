@@ -1560,3 +1560,272 @@ Piece 41.4: ✅ complete — PR open
 Piece 41.5: ✅ complete — PR open
 Piece 41.6: ✅ complete — PR open
 Last updated: 2026-04-24
+
+---
+
+# Build 42 — Bayesian Calibration Loop Prerequisites
+
+Planned: 2026-05-19
+
+These three pieces are the load-bearing prerequisites for Build Piece 20.1 (Bayesian heartbeat
+evaluation loop, per BUILD_GUIDE.md backlog). The CalibrationAgent cannot be built until all
+three are merged and working.
+
+## Architecture
+
+```
+ToolExecutor (enhanced: agent_config injection)
+       │
+       ├── session_read_self (action_level=5) ── reads caller's own session
+       │       └── TranscriptStore.load_since()
+       │               └── (summarize=True) → SummarizerAgent
+       │
+       └── session_lookup (action_level=3) ──── cross-session reads
+               ├── handler: CalibrationAgent scope check (session_key + time window)
+               ├── TranscriptStore.load_since()
+               ├── AuditLog (every read logged)
+               └── (summarize=True) → SummarizerAgent
+
+SummarizerAgent (standalone, no tool/session deps)
+  └── skill selection: SKILL_{name}.md → fallback SKILL.md
+  └── LLM call (tools=None), output scan, response UM
+```
+
+**Key security decisions:**
+- Two tools (not one) because `action_level` is static — self-reads are level 5 (auto),
+  cross-session reads are level 3 (approval-gated for main agent)
+- CalibrationAgent bypass: heartbeat sessions auto-bypass the approval gate via
+  `heartbeat_bypass_ops`; handler still enforces scope+time-window as defense-in-depth
+- `agent_config` injected at executor level (not LLM-visible, excluded from tool schema
+  via `_RUNTIME_PARAMS`) — this is the mechanism by which handlers know their caller
+
+---
+
+## Build Order
+
+---
+
+### Piece 42.1 — SummarizerAgent
+
+**Build:**
+- Create `openrattler/agents/summarizer/` package (mirrors ResearchAgent structure):
+  - `__init__.py`
+  - `config.py` — `SummarizerAgentConfig` (Pydantic):
+    - `model: str = "claude-haiku-4-5-20251001"` — cheap model, configurable
+    - `skill_prompt_path: Path` — must exist; loaded at init (raises `FileNotFoundError` otherwise)
+    - `named_skills_dir: Optional[Path] = None` — directory of `SKILL_*.md` named skills
+    - `max_input_chars: int = 100_000` — truncation limit before LLM call
+    - `max_output_chars: int = 4_000` — max summary length returned
+  - `models.py`:
+    - `SummarizerRequest`: `text: str`, `skill: Optional[str] = None`,
+      `context: Optional[str] = None`
+    - `SummarizerResult`: `summary: str`, `original_length: int`, `skill_used: str`,
+      `was_truncated: bool`
+    - `SummarizerError`: `error_code: str`, `message: str`, `trace_id: str`
+  - `agent.py` — `SummarizerAgent`:
+    - `__init__(config, audit, provider=None)` — reads skill prompts at init; raises
+      `FileNotFoundError` if `skill_prompt_path` missing (same pattern as ResearchAgent)
+    - `run(um, trace_id, from_agent, to_agent, session_key) -> UniversalMessage`:
+      1. Parse `SummarizerRequest` from `um.params`; return error UM if invalid
+      2. Select skill: if `skill` set and `SKILL_{skill}.md` exists in `named_skills_dir` →
+         use it; else fallback to default `skill_prompt_path`
+      3. Truncate `text` at `max_input_chars`; set `was_truncated=True`
+      4. Build `[{system: skill_prompt}, {user: text + optional context}]`
+      5. LLM call `tools=None`; stub fallback (first ~1000 chars) if provider None
+      6. `scan_for_suspicious_content(output)` — if flagged: audit event + error UM
+         with `error_code="OUTPUT_FLAGGED"`
+      7. Return response UM with `SummarizerResult` in params
+    - Never raises; all errors → error-type UM
+  - `prompts/SKILL.md` — general-purpose system prompt: concise synthesis, preserve key
+    facts, flag gaps, analyst voice, no verbatim repetition
+  - `prompts/SKILL_session.md` — session transcript skill: focus on topics discussed,
+    decisions made, user preferences expressed, action items
+- Tests in `tests/test_agents/test_summarizer/test_summarizer_agent.py`:
+  - Default skill loaded when `skill=None`
+  - Named skill loaded when `SKILL_session.md` exists and `skill="session"`
+  - Falls back to default when named skill file missing
+  - Input truncated at `max_input_chars`; `was_truncated=True` set
+  - Suspicious output → error UM with `error_code="OUTPUT_FLAGGED"`; audit event fired
+  - No provider → stub summary returned (no crash)
+  - `FileNotFoundError` at init if `skill_prompt_path` missing
+  - Invalid UM params → error UM, not crash
+  - Always returns UM; never raises
+
+**Why first:** Zero dependencies on 42.2 or 42.3. Build and test it in isolation before
+wiring into session_lookup.
+
+**New files:**
+- `openrattler/agents/summarizer/__init__.py`
+- `openrattler/agents/summarizer/config.py`
+- `openrattler/agents/summarizer/models.py`
+- `openrattler/agents/summarizer/agent.py`
+- `openrattler/agents/summarizer/prompts/SKILL.md`
+- `openrattler/agents/summarizer/prompts/SKILL_session.md`
+- `tests/test_agents/test_summarizer/__init__.py`
+- `tests/test_agents/test_summarizer/test_summarizer_agent.py`
+
+**Implementation note:** Strip `"anthropic/"` prefix before passing model to provider —
+same as `model.removeprefix("anthropic/")` in ResearchAgent.
+
+**Done when:** `pytest`, `mypy`, `black` pass. Stub + real provider paths covered. Named
+skill selection and fallback tested. Suspicious output detection tested.
+
+---
+
+### Piece 42.2 — TranscriptStore time-range + executor agent_config injection
+
+**Build:**
+- `openrattler/storage/transcripts.py` — add:
+  ```python
+  async def load_since(
+      self,
+      session_key: str,
+      since_iso: str,
+      max_turns: int = 20,
+  ) -> list[UniversalMessage]:
+  ```
+  - Validate `session_key` via existing `_validate_session_key`
+  - Parse `since_iso` as UTC-aware `datetime`; raise `ValueError` if not parseable
+    (normalize naive strings to UTC before comparison)
+  - Read all lines; deserialize each UM; filter `message.timestamp >= since_dt`
+  - Apply `max_turns` cap: take last `max_turns` from filtered list (oldest-first output)
+  - Return empty list if file doesn't exist (same contract as `load_recent`)
+
+- `openrattler/tools/executor.py` — extend step 7 (handler invocation):
+  - After resolving `handler`, check `"agent_config" in inspect.signature(handler).parameters`
+  - If present: add `agent_config=agent_config` to the kwargs dict before calling
+  - `inspect.signature` is CPython-cached per function — negligible hot-path overhead
+  - No change to any existing handler (none declare `agent_config`)
+
+- Tests (additions to existing test files):
+  - `tests/test_storage/test_transcripts.py`:
+    - `load_since` cuts out messages older than the given timestamp
+    - `load_since` applies `max_turns` cap after time filter
+    - Future `since_iso` → empty list
+    - Non-existent session → empty list
+    - Invalid `since_iso` → `ValueError`
+    - Result is oldest-first
+  - `tests/test_tools/test_executor.py`:
+    - Handler without `agent_config` param: kwargs unchanged (existing behavior preserved)
+    - Handler with `agent_config: AgentConfig` param: correct `agent_config` injected
+
+**Why second:** Both changes are infra that 42.3 depends on. Keeping them in one PR means
+42.3 can open against a clean, tested foundation.
+
+**Modified files:**
+- `openrattler/storage/transcripts.py`
+- `openrattler/tools/executor.py`
+- `tests/test_storage/test_transcripts.py`
+- `tests/test_tools/test_executor.py`
+
+**Done when:** `pytest`, `mypy`, `black` pass. Existing transcript and executor test suites
+remain green.
+
+---
+
+### Piece 42.3 — session_read_self + session_lookup tools
+
+**Build:**
+- `openrattler/tools/builtin/session_tools.py` — add alongside existing `sessions_history`:
+  - Module-level: `_summarizer_agent: Optional[SummarizerAgent] = None`
+  - Add `configure_summarizer_agent(agent: Optional[SummarizerAgent]) -> None`
+
+  - `session_read_self` tool:
+    - `trust_level_required=TrustLevel.main`, `action_level=5`
+    - Params (LLM-visible): `since_iso: str`, `max_turns: int = 20`,
+      `summarize: bool = True`
+    - Runtime-injected (LLM-invisible): `agent_config: AgentConfig`
+    - Logic:
+      1. `session_key = agent_config.session_key` — reads CALLER's own session
+      2. `TranscriptStore.load_since(session_key, since_iso, max_turns)`
+      3. Audit `session_read_own` with turn count
+      4. If `summarize=True`: serialize messages → SummarizerAgent with `skill="session"`
+      5. Return `{"session_key", "turn_count", "since_iso", "summary"/"messages", "summarized"}`
+
+  - `session_lookup` tool:
+    - `trust_level_required=TrustLevel.main`, `action_level=3`
+    - Params (LLM-visible): `session_key: str`, `since_iso: str`,
+      `max_turns: int = 20`, `summarize: bool = True`
+    - Runtime-injected: `agent_config: AgentConfig`
+    - Handler security (after gate, defense-in-depth):
+      ```python
+      caller_key = (agent_config.session_key or "")
+      is_calibration = caller_key.startswith("agent:main:heartbeat:")
+      if is_calibration and session_key != "agent:main:main":
+          audit("session_lookup_scope_violation", ...)
+          return {"error": "CalibrationAgent may only read agent:main:main"}
+      if is_calibration:
+          since_dt = parse(since_iso)
+          if since_dt < utcnow() - timedelta(hours=72):
+              audit("session_lookup_scope_violation", ...)
+              return {"error": "CalibrationAgent time window exceeded (max 72h)"}
+      ```
+    - `TranscriptStore.load_since(session_key, since_iso, max_turns)`
+    - Audit `session_lookup_read`: requester session_key, target session_key,
+      since_iso, turn_count returned
+    - If `summarize=True`: same SummarizerAgent path
+    - Returns same shape as `session_read_self`
+
+  - Keep `sessions_history` — mark docstring `[DEPRECATED: use session_read_self or
+    session_lookup]`, no behavior change
+
+- Startup wiring (wherever executor `heartbeat_bypass_ops` is configured — likely
+  `openrattler/runtime/startup.py` or `openrattler/cli/run.py`):
+  - Add `"session_lookup"` to the heartbeat bypass ops set so CalibrationAgent's
+    sessions (`agent:main:heartbeat:*`) skip the approval gate
+  - Add `configure_summarizer_agent(summarizer)` call alongside existing
+    `configure_transcript_store(store)` call
+
+- Tests in `tests/test_tools/test_session_tools.py` (additions):
+  - `session_read_self` uses `agent_config.session_key` (not a caller-supplied key)
+  - `session_read_self(summarize=False)` returns raw messages list
+  - `session_read_self(summarize=True)` returns summary dict from SummarizerAgent
+  - `session_lookup` with CalibrationAgent caller + `session_key="agent:main:main"` → succeeds
+  - `session_lookup` with CalibrationAgent caller + other session_key → scope violation error
+  - `session_lookup` with CalibrationAgent caller + `since_iso` older than 72h → error
+  - `session_lookup` audit entry contains requester, target, since_iso, turn_count
+  - `sessions_history` still works (regression guard)
+
+**Why last:** Depends on 42.1 (SummarizerAgent) and 42.2 (load_since + injection).
+
+**Modified files:**
+- `openrattler/tools/builtin/session_tools.py`
+- `openrattler/runtime/startup.py` (or equivalent startup file)
+- `tests/test_tools/test_session_tools.py`
+
+**Done when:** `pytest`, `mypy`, `black` pass. Security scoping tests pass. Audit entries
+verified to contain all required fields. `sessions_history` regression test green.
+
+---
+
+## Edge Cases & Open Questions
+
+**42.1:**
+- ⚠ Strip `"anthropic/"` model prefix before provider call (same as ResearchAgent pattern)
+- ⚠ `named_skills_dir=None`: must fall back to `skill_prompt_path` silently — no exception
+- ? 100k char input may be large for haiku's effective context — monitor in practice
+
+**42.2:**
+- ⚠ Timezone normalization: `UniversalMessage.timestamp` has tzinfo; caller-supplied
+  `since_iso` may be naive — convert both to UTC before `>=` comparison
+- ⚠ `load_since` reads the whole file before filtering — acceptable for typical session
+  sizes; document as a known optimization opportunity if very long sessions appear
+
+**42.3:**
+- ⚠ `agent_config.session_key` is `Optional[str]` — null-guard:
+  `(agent_config.session_key or "").startswith("agent:main:heartbeat:")`
+- ⚠ If `"session_lookup"` is not added to heartbeat bypass ops, CalibrationAgent calls
+  will block indefinitely at the approval gate — verify this in the startup wiring test
+- ⚠ `session_read_self` with no matching turns (empty result) must return
+  `{"turn_count": 0, ...}` not an error, so the caller can distinguish "nothing happened
+  in this window" from a failure
+
+---
+
+## Status
+
+Current milestone: **42.1 — complete**
+Piece 42.1: ✅ complete — PR open
+Piece 42.2: ⬜ not started
+Piece 42.3: ⬜ not started
+Last updated: 2026-05-19

@@ -19,6 +19,53 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /planner 2026-05-19 — Bayesian Calibration Loop Prerequisites (42.x) ✅
+
+**Plan written:** BUILD-PLAN.md (42.x section added)
+
+Planned three prerequisite build pieces for the Bayesian heartbeat evaluation loop (BUILD_GUIDE.md backlog item 20.1):
+
+- **42.1 SummarizerAgent** — new `openrattler/agents/summarizer/` package. Cheap model
+  (haiku default), skill-based prompt selection (named `SKILL_*.md` files + fallback),
+  UniversalMessage in/out, ephemeral, no tools. Used by session tools for summarize=True path.
+
+- **42.2 TranscriptStore + executor infra** — `load_since(key, since_iso, max_turns)` added
+  to TranscriptStore; executor extended to inject `agent_config` into handlers that declare it
+  (excluded from LLM tool schema via `_RUNTIME_PARAMS`, already documented in registry.py).
+
+- **42.3 session_read_self + session_lookup** — two new registered tools replacing the coarse
+  `sessions_history`. `session_read_self` (action_level=5): reads caller's own session.
+  `session_lookup` (action_level=3): cross-session reads, approval-gated for main agent,
+  heartbeat-bypassed for CalibrationAgent with handler-level scope+time-window enforcement
+  (CalibrationAgent restricted to `agent:main:main`, 72h window max).
+
+**Out of scope (next /plan):** CalibrationAgent, calibration_state.json store, HeartbeatProcessor integration.
+
+**Next step:** `/build` to start Piece 42.2 (TranscriptStore load_since + executor agent_config injection)
+
+---
+
+## /build 2026-05-19 — Piece 42.1 SummarizerAgent ✅
+
+**Branch:** `milestone-42.1-summarizer-agent` | **PR:** pending
+
+Built the SummarizerAgent package (`openrattler/agents/summarizer/`) as a standalone
+text-summarization subagent with no TranscriptStore or tool dependencies.
+
+**Files created:**
+- `openrattler/agents/summarizer/__init__.py`
+- `openrattler/agents/summarizer/config.py` — `SummarizerAgentConfig` (Pydantic)
+- `openrattler/agents/summarizer/models.py` — `SummarizerRequest`, `SummarizerResult`, `SummarizerError`
+- `openrattler/agents/summarizer/agent.py` — `SummarizerAgent`
+- `openrattler/agents/summarizer/prompts/SKILL.md` — default summarization prompt
+- `openrattler/agents/summarizer/prompts/SKILL_session.md` — session-specific prompt
+- `tests/test_agents/test_summarizer/__init__.py`
+- `tests/test_agents/test_summarizer/test_summarizer_agent.py` — 17 tests
+
+**Tests:** 17 new, 2314 total — all passing. mypy + black clean.
+
+---
+
 ## /smoketest 2026-05-01 — Research Pipeline & MCP Weather Live Test ✅
 
 **Branch:** `fix/smoketest-2026-05-01` | **PR:** pending
