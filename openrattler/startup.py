@@ -439,9 +439,7 @@ class ApplicationContext:
 
         if self._scheduler is not None:
             try:
-                await asyncio.wait_for(
-                    self._scheduler.stop(), timeout=_COMPONENT_STOP_TIMEOUT
-                )
+                await asyncio.wait_for(self._scheduler.stop(), timeout=_COMPONENT_STOP_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning("Scheduler.stop() timed out — continuing shutdown")
 
@@ -455,9 +453,7 @@ class ApplicationContext:
 
         if self._gateway is not None:
             try:
-                await asyncio.wait_for(
-                    self._gateway.stop(), timeout=_COMPONENT_STOP_TIMEOUT
-                )
+                await asyncio.wait_for(self._gateway.stop(), timeout=_COMPONENT_STOP_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning("Gateway.stop() timed out — continuing shutdown")
 
@@ -737,13 +733,24 @@ async def build_application(
         file_write,
     )
     from openrattler.tools.builtin.session_tools import (
+        configure_audit_log as configure_session_audit_log,
         configure_transcript_store,
+        session_lookup,
+        session_read_self,
         sessions_history,
     )
 
     configure_allowed_directories([workspace_dir])
     configure_transcript_store(transcript_store)
-    for _fn in (file_read, file_write, file_list, sessions_history):
+    configure_session_audit_log(audit)
+    for _fn in (
+        file_read,
+        file_write,
+        file_list,
+        sessions_history,
+        session_read_self,
+        session_lookup,
+    ):
         registry.register(_fn._tool_definition, _fn)  # type: ignore[union-attr]
 
     # 8. MCPManager — load manifests + connect.
@@ -925,6 +932,22 @@ async def build_application(
         provider=llm_provider,  # Forwarded to ResearchAgent for real LLM synthesis
     )
     ResearchTools(creator=creator, audit=audit).register_all(registry)
+
+    # 11e. SummarizerAgent — wire into session tools so session_read_self and
+    #      session_lookup can summarize transcripts on demand.
+    from openrattler.agents.summarizer.agent import SummarizerAgent
+    from openrattler.agents.summarizer.config import SummarizerAgentConfig
+    from openrattler.tools.builtin.session_tools import (
+        configure_summarizer_agent as configure_session_summarizer,
+    )
+
+    _summarizer_config = SummarizerAgentConfig()
+    _summarizer = SummarizerAgent(
+        config=_summarizer_config,
+        audit=audit,
+        provider=llm_provider,
+    )
+    configure_session_summarizer(_summarizer)
 
     # 12. AgentRuntime.
     runtime = AgentRuntime(

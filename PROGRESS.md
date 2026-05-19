@@ -45,9 +45,31 @@ Planned three prerequisite build pieces for the Bayesian heartbeat evaluation lo
 
 ---
 
+## /build 2026-05-19 — Piece 42.3 session_read_self + session_lookup tools ✅
+
+**Branch:** `milestone-42.3-session-read-self-lookup` | **PR:** pending
+
+**Files modified:**
+- `openrattler/tools/builtin/session_tools.py` — added `session_read_self` (action_level=5,
+  reads caller's own session via agent_config.session_key), `session_lookup` (action_level=3,
+  cross-session with CalibrationAgent scope + 72h window enforcement), `configure_summarizer_agent()`,
+  `configure_audit_log()`. Marked `sessions_history` docstring deprecated.
+- `openrattler/security/action_levels.py` — added `"session_lookup"` to
+  `HEARTBEAT_AUTO_APPROVE_OPERATIONS` so CalibrationAgent heartbeat sessions bypass the
+  approval gate (handler-level scope enforcement provides defense-in-depth).
+- `openrattler/startup.py` — wires `configure_session_audit_log(audit)`,
+  `configure_session_summarizer(summarizer)`, registers `session_read_self` and `session_lookup`
+  into the tool registry. SummarizerAgent constructed at step 11e with real LLM provider.
+
+**Tests:** 12 new (TestSessionReadSelf + TestSessionLookup), 2336 total — all passing. mypy + black clean.
+
+**Next step:** Review PR, then start Piece 43.x (CalibrationAgent) when ready.
+
+---
+
 ## /build 2026-05-19 — Piece 42.2 TranscriptStore time-range + executor agent_config injection ✅
 
-**Branch:** `milestone-42.2-transcript-store-executor` | **PR:** pending
+**Branch:** `milestone-42.2-transcript-store-executor` | **PR:** merged
 
 **Files modified:**
 - `openrattler/storage/transcripts.py` — added `load_since(session_key, since_iso, max_turns)`:
