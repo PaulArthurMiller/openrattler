@@ -105,6 +105,10 @@ HEARTBEAT_AUTO_APPROVE_OPERATIONS: frozenset[str] = frozenset(
         "send_sms",
         "update_memory_narrative",
         "memory_write",
+        # CalibrationAgent needs to read the main session transcript without blocking
+        # at the approval gate; its access is further constrained by session_lookup's
+        # handler-level scope enforcement (agent:main:main only, 72h window).
+        "session_lookup",
     }
 )
 
