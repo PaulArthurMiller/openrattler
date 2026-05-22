@@ -19,6 +19,41 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-22 — Piece 44.1 Memory Security Audit Trail ✅
+
+**Branch:** `milestone-44.1-memory-security-audit-trail` | **PR:** pending
+
+Three cohesive changes that together create a verifiable, navigable audit trail for the
+memory security review pipeline:
+
+**Files modified:**
+- `openrattler/models/audit.py` — added `AuditEventType(str, Enum)` with first value
+  `MEMORY_SECURITY_REVIEW = "memory_security_review"`. Inherits `str` so all existing
+  string-based queries need no changes.
+- `openrattler/models/__init__.py` — exported `AuditEventType`.
+- `openrattler/security/memory_security.py`:
+  - `SecurityResult` gains `review_id: str` (default_factory=uuid4) and `verdict: str`
+    (default "approved") with backward-compatible defaults.
+  - New `_compute_verdict(suspicious, confidence)` module-level helper — maps to
+    `"approved"` / `"rejected"` (confidence ≥ 100) / `"escalated"` (confidence < 100).
+  - `_do_review()` now generates `review_id`, computes `verdict`, captures `diff_summary`
+    (first 500 chars of serialised diff), uses `AuditEventType.MEMORY_SECURITY_REVIEW`
+    as event name, sets `trace_id=review_id` on `AuditEvent`, and includes `verdict` and
+    `diff_summary` in `details`.
+  - `except` path in `review_memory_change()` similarly enriched with enum + verdict.
+- `openrattler/storage/memory.py`:
+  - `apply_changes()` gains optional `audit_ref: Optional[str] = None` — when set,
+    stored in the history entry as `"audit_ref"`; omitted entirely when None.
+  - `apply_changes_with_review()` passes `result.review_id` as `audit_ref` to
+    `apply_changes()`, linking every memory change back to the audit event that cleared it.
+
+**Tests:** 17 new (3 in `TestAuditEventType`, 5 in `TestSecurityResultFields`, 9 in
+`TestAuditTrailEnrichment`), 2366 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 43.2 (CredentialManager startup integration).
+
+---
+
 ## /build 2026-05-22 — Piece 43.1 CredentialManager — centralized credential loading ✅
 
 **Branch:** `milestone-43.1-credential-manager-core` | **PR:** #91

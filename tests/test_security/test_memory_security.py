@@ -315,3 +315,128 @@ class TestApplyChangesWithReview:
         )
         assert ok is False
         assert reason is not None
+
+
+# ---------------------------------------------------------------------------
+# SecurityResult new fields — review_id + verdict
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityResultFields:
+    async def test_result_has_review_id(self, agent: MemorySecurityAgent) -> None:
+        diff = _make_diff(added={"notes": "clean content"})
+        result = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        assert result.review_id
+        assert isinstance(result.review_id, str)
+        assert len(result.review_id) > 0
+
+    async def test_each_review_has_unique_id(self, agent: MemorySecurityAgent) -> None:
+        diff = _make_diff(added={"notes": "clean content"})
+        r1 = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        r2 = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        assert r1.review_id != r2.review_id
+
+    async def test_verdict_approved_on_clean(self, agent: MemorySecurityAgent) -> None:
+        diff = _make_diff(added={"notes": "user likes tea"})
+        result = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        assert result.verdict == "approved"
+
+    async def test_verdict_rejected_on_pattern_hit(self, agent: MemorySecurityAgent) -> None:
+        # rm -rf triggers destructive_command at confidence 100.
+        diff = _make_diff(added={"notes": "run rm -rf /tmp"})
+        result = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        assert result.verdict == "rejected"
+
+    async def test_verdict_escalated_on_policy_violation(self, agent: MemorySecurityAgent) -> None:
+        # Non-main session + instructions key → confidence 80 → "escalated".
+        diff = _make_diff(added={"instructions": "be helpful"})
+        result = await agent.review_memory_change("main", diff, NON_MAIN_SESSION)
+        assert result.verdict == "escalated"
+
+
+# ---------------------------------------------------------------------------
+# Audit trail enrichment — diff_summary, trace_id, verdict in event details
+# ---------------------------------------------------------------------------
+
+
+class TestAuditTrailEnrichment:
+    async def test_audit_event_trace_id_matches_review_id(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        diff = _make_diff(added={"notes": "clean"})
+        result = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert events[0].trace_id == result.review_id
+
+    async def test_audit_event_verdict_matches_result(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        diff = _make_diff(added={"notes": "clean"})
+        result = await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert events[0].details["verdict"] == result.verdict
+
+    async def test_audit_event_has_diff_summary(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        diff = _make_diff(added={"notes": "clean"})
+        await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert "diff_summary" in events[0].details
+
+    async def test_diff_summary_contains_diff_content(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        diff = _make_diff(added={"notes": "user prefers dark mode"})
+        await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert events[0].details["diff_summary"] != ""
+
+    async def test_diff_summary_empty_for_empty_diff(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        diff = _make_diff()
+        await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert events[0].details["diff_summary"] == ""
+
+    async def test_diff_summary_truncated(
+        self, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        # Build a diff whose serialized text exceeds 500 chars.
+        long_value = "x" * 600
+        diff = _make_diff(added={"notes": long_value})
+        await agent.review_memory_change("main", diff, MAIN_SESSION)
+        events = await audit.query(event_type="memory_security_review")
+        assert len(events[0].details["diff_summary"]) <= 500
+
+    async def test_history_entry_has_audit_ref(
+        self, store: MemoryStore, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        ok, _ = await store.apply_changes_with_review(
+            "main", {"facts": "clean data"}, MAIN_SESSION, agent
+        )
+        assert ok is True
+        memory = await store.load("main")
+        history = memory.get("history", [])
+        last_entry = history[-1]
+        assert "audit_ref" in last_entry
+        # The ref must match the audit event's trace_id.
+        events = await audit.query(event_type="memory_security_review")
+        assert last_entry["audit_ref"] == events[0].trace_id
+
+    async def test_direct_apply_changes_omits_audit_ref(self, store: MemoryStore) -> None:
+        await store.apply_changes("main", {"facts": "user approved"}, approved_by="user")
+        memory = await store.load("main")
+        history = memory.get("history", [])
+        assert "audit_ref" not in history[-1]
+
+    async def test_audit_ref_queryable(
+        self, store: MemoryStore, agent: MemorySecurityAgent, audit: AuditLog
+    ) -> None:
+        await store.apply_changes_with_review("main", {"facts": "clean data"}, MAIN_SESSION, agent)
+        memory = await store.load("main")
+        audit_ref = memory["history"][-1]["audit_ref"]
+        events = await audit.query(trace_id=audit_ref)
+        assert len(events) == 1
+        assert events[0].details["verdict"] is not None

@@ -1829,3 +1829,18 @@ Piece 42.1: ✅ complete — merged
 Piece 42.2: ✅ complete — merged
 Piece 42.3: ✅ complete — PR open
 Last updated: 2026-05-19
+
+---
+
+---
+
+# Build 44: Memory Security Audit Trail
+
+Planned: 2026-05-22
+References: Build 2.3 (Audit Log), Build 13.1 (Memory Security Agent)
+
+## Status
+
+Current milestone: **44.1 — complete**
+Piece 44.1: ✅ complete — PR open
+Last updated: 2026-05-22

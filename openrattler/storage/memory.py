@@ -168,7 +168,13 @@ class MemoryStore:
         current = await self.load(agent_id)
         return _compute_diff(current, proposed)
 
-    async def apply_changes(self, agent_id: str, changes: dict[str, Any], approved_by: str) -> bool:
+    async def apply_changes(
+        self,
+        agent_id: str,
+        changes: dict[str, Any],
+        approved_by: str,
+        audit_ref: Optional[str] = None,
+    ) -> bool:
         """Apply *changes* to the agent's memory and record a history entry.
 
         *changes* is a shallow map of top-level memory keys to their new
@@ -176,7 +182,11 @@ class MemoryStore:
         ignored — history is always managed by this method itself.
 
         A history entry recording the diff, ISO-format UTC timestamp, and
-        *approved_by* identity is appended before saving.
+        *approved_by* identity is appended before saving.  When *audit_ref*
+        is provided it is stored in the history entry as ``"audit_ref"`` so
+        the entry can be linked back to the specific audit event that
+        authorised the write.  The key is omitted entirely when None so that
+        direct calls without a review trail don't leave a misleading null.
 
         Returns ``True`` on success.
 
@@ -198,13 +208,14 @@ class MemoryStore:
         # Compute diff before appending history, then record.
         diff = _compute_diff(current, updated)
         history: list[dict[str, Any]] = list(updated.get("history", []))
-        history.append(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "change": _describe_diff(diff),
-                "approved_by": approved_by,
-            }
-        )
+        entry: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "change": _describe_diff(diff),
+            "approved_by": approved_by,
+        }
+        if audit_ref is not None:
+            entry["audit_ref"] = audit_ref
+        history.append(entry)
         updated["history"] = history
 
         await self.save(agent_id, updated)
@@ -243,7 +254,9 @@ class MemoryStore:
         result = await security_agent.review_memory_change(agent_id, diff, session_key)
         if result.suspicious:
             return False, result.reason
-        await self.apply_changes(agent_id, changes, approved_by="security_agent")
+        await self.apply_changes(
+            agent_id, changes, approved_by="security_agent", audit_ref=result.review_id
+        )
         return True, None
 
 
