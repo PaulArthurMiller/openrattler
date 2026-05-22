@@ -19,6 +19,34 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-22 — Piece 43.1 CredentialManager — centralized credential loading ✅
+
+**Branch:** `milestone-43.1-credential-manager-core` | **PR:** #91
+
+**Files created:**
+- `openrattler/config/credentials.py` — `CredentialManager`, `CredentialMissingError`,
+  `_CredentialSpec`, `CREDENTIAL_REGISTRY` (9 specs), `_LLM_OR_GROUP`,
+  `build_credential_manager()` convenience constructor.
+  - `load(config)`: reads env-var credentials and enabled channel settings into a private
+    dict; idempotent (second call refreshes the store).
+  - `get(name)`: returns credential value or raises `CredentialMissingError` with an
+    actionable message pointing to the env var or `config.json` field.
+  - `missing_for_config(config)`: evaluates per-spec `required_check` lambdas against the
+    live `AppConfig`; LLM OR-group logic — if either `anthropic_api_key` or `openai_api_key`
+    is loaded, neither is reported missing; if both absent, one entry (for `anthropic_api_key`)
+    is returned.
+  - Values are never exposed in `repr`, `str`, or exception messages — only canonical names.
+- `tests/test_config/test_credentials.py` — 13 tests covering repr safety, get() error
+  messages, env-var and config-sourced loading, disabled-channel skipping,
+  `missing_for_config()` OR logic, idempotency, serper conditional requirement.
+
+**Tests:** 13 new, 2349 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR #91, then plan and build Piece 43.2 (startup integration — wire
+`CredentialManager` into `build_application()` and `CLIChat.open()`).
+
+---
+
 ## /planner 2026-05-19 — Bayesian Calibration Loop Prerequisites (42.x) ✅
 
 **Plan written:** BUILD-PLAN.md (42.x section added)
