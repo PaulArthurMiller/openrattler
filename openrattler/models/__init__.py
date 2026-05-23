@@ -18,7 +18,7 @@ from openrattler.models.agents import (
     TaskTemplate,
     TrustLevel,
 )
-from openrattler.models.audit import AuditEvent
+from openrattler.models.audit import AuditEvent, AuditEventType
 from openrattler.models.errors import ErrorCode
 from openrattler.models.messages import (
     UniversalMessage,
@@ -53,6 +53,7 @@ __all__ = [
     "ToolResult",
     # audit
     "AuditEvent",
+    "AuditEventType",
     # mcp
     "MCPTrustTier",
     "MCPNetworkPermissions",

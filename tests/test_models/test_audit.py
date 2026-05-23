@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from openrattler.models.audit import AuditEvent
+from openrattler.models.audit import AuditEvent, AuditEventType
+from openrattler.storage.audit import AuditLog
 
 
 class TestAuditEvent:
@@ -93,3 +95,19 @@ class TestAuditEvent:
         for name in event_names:
             ev = AuditEvent(event=name)
             assert ev.event == name
+
+
+class TestAuditEventType:
+    def test_enum_value_equals_string(self) -> None:
+        assert AuditEventType.MEMORY_SECURITY_REVIEW == "memory_security_review"
+
+    def test_usable_as_event_name(self) -> None:
+        ev = AuditEvent(event=AuditEventType.MEMORY_SECURITY_REVIEW)
+        assert ev.event == "memory_security_review"
+
+    async def test_query_accepts_enum_value(self, tmp_path: Path) -> None:
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        await audit.log(AuditEvent(event=AuditEventType.MEMORY_SECURITY_REVIEW))
+        results = await audit.query(event_type=AuditEventType.MEMORY_SECURITY_REVIEW)
+        assert len(results) == 1
+        assert results[0].event == "memory_security_review"

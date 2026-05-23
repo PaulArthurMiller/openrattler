@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import json
 from typing import Any, Optional
+from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from openrattler.models.audit import AuditEvent
+from openrattler.models.audit import AuditEvent, AuditEventType
 from openrattler.security.patterns import scan_for_suspicious_content
 from openrattler.storage.audit import AuditLog
 
@@ -55,11 +56,16 @@ class SecurityResult(BaseModel):
         confidence: 0–100 confidence score.  100 = definite threat detected
                     via pattern match; 80 = policy violation (non-main session
                     writing instructions); 0 = clean.
+        review_id:  Per-review UUID used as correlation key between this result
+                    and the AuditEvent that recorded it.
+        verdict:    Structured outcome: "approved" | "rejected" | "escalated".
     """
 
     suspicious: bool
     reason: Optional[str] = None
     confidence: int  # 0–100
+    review_id: str = Field(default_factory=lambda: str(uuid4()))
+    verdict: str = "approved"  # "approved" | "rejected" | "escalated"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,21 @@ def _modifies_instructions(diff: dict[str, Any]) -> bool:
 def _is_main_session(session_key: str) -> bool:
     """Return True only for the personal main session."""
     return session_key == _MAIN_SESSION_KEY
+
+
+def _compute_verdict(suspicious: bool, confidence: int) -> str:
+    """Map suspicious + confidence to a structured verdict string.
+
+    "approved"  — no threat detected; write proceeds.
+    "rejected"  — definite pattern hit (confidence >= 100); hard block.
+    "escalated" — policy violation only (confidence < 100); still blocked,
+                  but warrants human review rather than automated rejection.
+    """
+    if not suspicious:
+        return "approved"
+    if confidence >= 100:
+        return "rejected"
+    return "escalated"
 
 
 # ---------------------------------------------------------------------------
@@ -154,17 +175,21 @@ class MemorySecurityAgent:
             return await self._do_review(agent_id, diff, session_key)
         except Exception as exc:  # pragma: no cover — safety net
             # Unexpected errors default to blocking the write (fail-secure).
+            review_id = str(uuid4())
             result = SecurityResult(
                 suspicious=True,
                 reason=f"Internal review error: {exc}",
                 confidence=100,
+                review_id=review_id,
+                verdict="rejected",
             )
             await self._audit.log(
                 AuditEvent(
-                    event="memory_security_review",
+                    event=AuditEventType.MEMORY_SECURITY_REVIEW,
                     session_key=session_key,
                     agent_id=agent_id,
-                    details={"error": str(exc), "blocked": True},
+                    trace_id=review_id,
+                    details={"error": str(exc), "blocked": True, "verdict": "rejected"},
                 )
             )
             return result
@@ -215,18 +240,31 @@ class MemorySecurityAgent:
         else:
             confidence = 0
 
-        result = SecurityResult(suspicious=suspicious, reason=reason, confidence=confidence)
+        review_id = str(uuid4())
+        verdict = _compute_verdict(suspicious, confidence)
+        diff_summary = _diff_to_text(diff)[:500]
+
+        result = SecurityResult(
+            suspicious=suspicious,
+            reason=reason,
+            confidence=confidence,
+            review_id=review_id,
+            verdict=verdict,
+        )
 
         await self._audit.log(
             AuditEvent(
-                event="memory_security_review",
+                event=AuditEventType.MEMORY_SECURITY_REVIEW,
                 session_key=session_key,
                 agent_id=agent_id,
+                trace_id=review_id,
                 details={
                     "suspicious": suspicious,
                     "confidence": confidence,
                     "reason": reason,
                     "blocked": suspicious,
+                    "verdict": verdict,
+                    "diff_summary": diff_summary,
                 },
             )
         )

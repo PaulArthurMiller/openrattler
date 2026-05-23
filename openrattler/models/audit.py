@@ -7,9 +7,21 @@ session access — is recorded as an AuditEvent and written to the audit log.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+
+class AuditEventType(str, Enum):
+    """Formal constants for known audit event type names.
+
+    Inherits ``str`` so comparisons to plain string literals are True —
+    existing code using ``audit.query(event_type="memory_security_review")``
+    needs no changes.  Add new values here as event names are formalized.
+    """
+
+    MEMORY_SECURITY_REVIEW = "memory_security_review"
 
 
 class AuditEvent(BaseModel):
