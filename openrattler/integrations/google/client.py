@@ -72,6 +72,28 @@ class GoogleClientFactory:
             self._tasks = await self._build("tasks", "v1")
         return self._tasks
 
+    def reset(self) -> None:
+        """Clear all cached service objects so they are rebuilt on next call.
+
+        Call this after an ``invalid_grant`` error so the stale service (with
+        expired credentials baked in) is not reused on subsequent tool calls.
+        """
+        self._calendar = None
+        self._drive = None
+        self._gmail = None
+        self._tasks = None
+        logger.debug("GoogleClientFactory: service cache cleared.")
+
+    def clear_auth(self) -> None:
+        """Clear service cache and delete the stored credential token file.
+
+        Convenience wrapper that combines ``reset()`` and
+        ``auth.clear_credentials()``.  Call from tool handlers when they detect
+        an ``invalid_grant`` error inside an API ``execute()`` call.
+        """
+        self.reset()
+        self._auth.clear_credentials()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

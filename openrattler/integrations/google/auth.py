@@ -123,6 +123,16 @@ class GoogleAuthManager:
                 "to complete the OAuth flow."
             ) from exc
 
+    def clear_credentials(self) -> None:
+        """Delete the stored token file without revoking at Google.
+
+        Call this when Google returns ``invalid_grant`` from inside an API call
+        (not during an explicit refresh) so ``is_authorized()`` returns ``False``
+        and subsequent attempts surface a clean error rather than repeated API failures.
+        """
+        self._credential_manager.clear_tokens()
+        logger.info("GoogleAuthManager: credentials cleared — re-auth required.")
+
     async def run_auth_flow(self) -> None:
         """Run the browser-based OAuth consent flow.
 

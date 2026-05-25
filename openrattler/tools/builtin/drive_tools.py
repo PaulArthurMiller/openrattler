@@ -260,6 +260,32 @@ class DriveToolHandler:
         self._audit = audit
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _handle_auth_expired(self, tool_name: str, call_id: str) -> ToolResult:
+        """Clear stale credentials and return an actionable error for invalid_grant."""
+        logger.warning("%s: Google OAuth invalid_grant detected — clearing credentials.", tool_name)
+        self._client.clear_auth()
+        await self._audit.log(
+            AuditEvent(
+                event="google_auth_expired",
+                agent_id="drive_tools",
+                session_key=_TOOLS_SESSION_KEY,
+                details={"tool": tool_name, "error": "invalid_grant"},
+            )
+        )
+        return ToolResult(
+            call_id=call_id,
+            success=False,
+            error=(
+                "Google OAuth token has expired (invalid_grant). "
+                "Run 'openrattler auth google' to re-authorize. "
+                "Drive tools will be unavailable until re-authorized."
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # Tool handlers
     # ------------------------------------------------------------------
 
@@ -311,6 +337,8 @@ class DriveToolHandler:
             files = response.get("files", [])
             logger.debug("drive_list_files: returned %d files", len(files))
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_list_files", call_id)
             logger.exception("drive_list_files failed")
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -365,6 +393,8 @@ class DriveToolHandler:
             folders = response.get("files", [])
             logger.debug("drive_list_folders: returned %d folders", len(folders))
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_list_folders", call_id)
             logger.exception("drive_list_folders failed")
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -412,6 +442,8 @@ class DriveToolHandler:
                 svc.files().get(fileId=file_id, fields="id,name,mimeType,size").execute()
             )
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_read_file", call_id)
             logger.exception("drive_read_file metadata fetch failed: file_id=%s", file_id)
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -455,6 +487,8 @@ class DriveToolHandler:
                 "drive_read_file: fetched %d chars from file_id=%s", len(raw_text), file_id
             )
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_read_file", call_id)
             logger.exception("drive_read_file content fetch failed: file_id=%s", file_id)
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -514,6 +548,8 @@ class DriveToolHandler:
             folder_id: str = created.get("id", "")
             logger.info("drive_create_folder: created folder_id=%s name=%r", folder_id, name)
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_create_folder", call_id)
             logger.exception("drive_create_folder failed: name=%r", name)
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -588,6 +624,8 @@ class DriveToolHandler:
                 mime_type,
             )
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("drive_upload_file", call_id)
             logger.exception("drive_upload_file failed: name=%r", name)
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 

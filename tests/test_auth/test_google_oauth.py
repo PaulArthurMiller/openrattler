@@ -235,6 +235,7 @@ class TestGetCredentials:
         mock_creds.client_id = "client-id"
         mock_creds.client_secret = "client-secret"
         mock_creds.scopes = _TEST_SCOPES
+        mock_creds.expiry = None
 
         with (
             patch("google.oauth2.credentials.Credentials", return_value=mock_creds),
@@ -243,6 +244,48 @@ class TestGetCredentials:
             await manager.get_credentials()
 
         mock_creds.refresh.assert_called_once_with(mock_request_cls.return_value)
+
+    async def test_invalid_grant_clears_token_file_and_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """invalid_grant during refresh must delete the token file and raise AuthorizationError."""
+        monkeypatch.setenv("GOOGLE_OAUTH_PASSPHRASE", _TEST_PASSPHRASE)
+        manager = _make_manager(tmp_path)
+        _write_encrypted_token(manager, _TEST_PASSPHRASE)
+
+        token_path = tmp_path / manager._token_file
+        assert token_path.exists()
+
+        mock_creds = MagicMock()
+        mock_creds.expired = True
+        mock_creds.refresh_token = "stale_refresh_token"
+        mock_creds.expiry = None
+        mock_creds.refresh.side_effect = Exception("invalid_grant: Bad Request")
+
+        with (
+            patch("google.oauth2.credentials.Credentials", return_value=mock_creds),
+            patch("google.auth.transport.requests.Request"),
+        ):
+            with pytest.raises(AuthorizationError, match="refresh token has expired"):
+                await manager.get_credentials()
+
+        # Token file must be deleted so is_authorized() returns False.
+        assert not token_path.exists()
+
+    def test_clear_tokens_removes_token_file(self, tmp_path: Path) -> None:
+        """clear_tokens() must delete the token file."""
+        manager = _make_manager(tmp_path)
+        token_path = tmp_path / manager._token_file
+        token_path.write_bytes(b"fake-encrypted-content")
+
+        assert token_path.exists()
+        manager.clear_tokens()
+        assert not token_path.exists()
+
+    def test_clear_tokens_noop_when_no_file(self, tmp_path: Path) -> None:
+        """clear_tokens() must not raise when the token file does not exist."""
+        manager = _make_manager(tmp_path)
+        manager.clear_tokens()  # should not raise
 
     async def test_refreshed_tokens_re_encrypted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -263,6 +306,7 @@ class TestGetCredentials:
         mock_creds.client_id = "client-id"
         mock_creds.client_secret = "client-secret"
         mock_creds.scopes = _TEST_SCOPES
+        mock_creds.expiry = None
 
         with (
             patch("google.oauth2.credentials.Credentials", return_value=mock_creds),
@@ -308,6 +352,7 @@ class TestAuditLogging:
         mock_creds.client_id = "client-id"
         mock_creds.client_secret = "secret"
         mock_creds.scopes = _TEST_SCOPES
+        mock_creds.expiry = None
         mock_flow.credentials = mock_creds
 
         logged_events: list[AuditEvent] = []
@@ -382,6 +427,7 @@ class TestAuditLogging:
         mock_creds.client_id = "client-id"
         mock_creds.client_secret = "secret"
         mock_creds.scopes = _TEST_SCOPES
+        mock_creds.expiry = None
 
         with (
             patch("google.oauth2.credentials.Credentials", return_value=mock_creds),
@@ -418,6 +464,7 @@ class TestAuditLogging:
         mock_creds.client_id = "client-id"
         mock_creds.client_secret = "secret"
         mock_creds.scopes = _TEST_SCOPES
+        mock_creds.expiry = None
 
         with (
             patch("google.oauth2.credentials.Credentials", return_value=mock_creds),

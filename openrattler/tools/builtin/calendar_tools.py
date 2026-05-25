@@ -187,6 +187,32 @@ class CalendarToolHandler:
         self._audit = audit
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _handle_auth_expired(self, tool_name: str, call_id: str) -> ToolResult:
+        """Clear stale credentials and return an actionable error for invalid_grant."""
+        logger.warning("%s: Google OAuth invalid_grant detected — clearing credentials.", tool_name)
+        self._client.clear_auth()
+        await self._audit.log(
+            AuditEvent(
+                event="google_auth_expired",
+                agent_id="calendar_tools",
+                session_key=_TOOLS_SESSION_KEY,
+                details={"tool": tool_name, "error": "invalid_grant"},
+            )
+        )
+        return ToolResult(
+            call_id=call_id,
+            success=False,
+            error=(
+                "Google OAuth token has expired (invalid_grant). "
+                "Run 'openrattler auth google' to re-authorize. "
+                "Calendar tools will be unavailable until re-authorized."
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # Tool handlers
     # ------------------------------------------------------------------
 
@@ -235,6 +261,8 @@ class CalendarToolHandler:
                 "calendar_list_events: returned %d events for calendar=%s", len(events), calendar_id
             )
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("calendar_list_events", call_id)
             logger.exception("calendar_list_events failed: calendar_id=%s", calendar_id)
             return ToolResult(call_id=call_id, success=False, error=str(exc))
 
@@ -277,6 +305,8 @@ class CalendarToolHandler:
             )
             logger.debug("calendar_read_event: fetched event_id=%s", event_id)
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("calendar_read_event", call_id)
             logger.exception(
                 "calendar_read_event failed: event_id=%s calendar_id=%s", event_id, calendar_id
             )
@@ -346,6 +376,8 @@ class CalendarToolHandler:
                 "calendar_create_event: created event_id=%s calendar_id=%s", event_id, calendar_id
             )
         except Exception as exc:
+            if "invalid_grant" in str(exc):
+                return await self._handle_auth_expired("calendar_create_event", call_id)
             logger.exception(
                 "calendar_create_event failed: summary=%r calendar_id=%s", summary, calendar_id
             )
