@@ -19,6 +19,32 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## 2026-05-25 — Weather MCP Server Enhancement ✅
+
+**Branch:** `claude-enhance-weather-tools` | **PR:** pending
+
+Added four new tools to the bundled NWS weather MCP server, giving Corvus access to
+detailed meteorological data beyond the original 3-period forecast and state alerts.
+
+**New tools:**
+- `get_hourly_forecast(lat, lon)` — hour-by-hour breakdown for next 24 hours with temp,
+  conditions, wind speed/direction. Uses `forecastHourly` URL from the NWS points response.
+- `get_extended_forecast(lat, lon)` — full 7-day forecast (up to 14 periods) with
+  `detailedForecast` text per period instead of the short summary.
+- `get_forecast_discussion(lat, lon)` — official NWS meteorologist Area Forecast Discussion
+  (AFD) text, looked up via the `cwa` office code from the points response.
+- `get_radar_stations(lat, lon, radius_km=250)` — lists nearby NEXRAD stations within a
+  given radius, sorted nearest-first with distance in km. Uses haversine formula.
+
+**Files modified:**
+- `openrattler/mcp/servers/weather.py` — added 4 tools + `_haversine()` helper; bumped to v1.1.0
+- `openrattler/mcp/manifests/weather-mcp.json` — declared all 6 tools (2 existing + 4 new)
+- `tests/test_mcp/test_weather_server.py` — 27 tests (9 new test classes), all passing; mypy + black clean
+
+**Next step:** Merge PR.
+
+---
+
 ## /build 2026-05-22 — Piece 44.1 Memory Security Audit Trail ✅
 
 **Branch:** `milestone-44.1-memory-security-audit-trail` | **PR:** pending

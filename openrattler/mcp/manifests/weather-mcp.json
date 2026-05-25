@@ -1,6 +1,6 @@
 {
     "server_id": "weather-mcp",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "publisher": "openrattler",
     "verified": true,
     "trust_tier": "bundled",
@@ -23,7 +23,7 @@
     "tools": [
         {
             "name": "get_forecast",
-            "description": "Get weather forecast for a location",
+            "description": "Get weather forecast for a location (next 3 periods)",
             "requires_approval": false,
             "cost_estimate": "none",
             "side_effects": "none"
@@ -31,6 +31,34 @@
         {
             "name": "get_alerts",
             "description": "Get active weather alerts for a US state",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        },
+        {
+            "name": "get_hourly_forecast",
+            "description": "Get hour-by-hour weather forecast for the next 24 hours",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        },
+        {
+            "name": "get_extended_forecast",
+            "description": "Get extended 7-day forecast with detailed descriptions",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        },
+        {
+            "name": "get_forecast_discussion",
+            "description": "Get the official NWS meteorologist Area Forecast Discussion",
+            "requires_approval": false,
+            "cost_estimate": "none",
+            "side_effects": "none"
+        },
+        {
+            "name": "get_radar_stations",
+            "description": "Get nearby NEXRAD radar stations within a given radius",
             "requires_approval": false,
             "cost_estimate": "none",
             "side_effects": "none"
