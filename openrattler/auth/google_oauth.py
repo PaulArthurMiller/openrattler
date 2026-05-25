@@ -25,6 +25,7 @@ SECURITY DESIGN
 from __future__ import annotations
 
 import asyncio
+import datetime
 import getpass
 import json
 import logging
@@ -192,6 +193,7 @@ class GoogleCredentialManager:
                 "client_id": creds.client_id,
                 "client_secret": creds.client_secret,
                 "scopes": list(creds.scopes or self._scopes),
+                "expiry": creds.expiry.isoformat() if creds.expiry else None,
             }
         )
         encrypted = self._encrypt(token_data, passphrase)
@@ -241,6 +243,15 @@ class GoogleCredentialManager:
         token_data_str = self._decrypt(encrypted, passphrase)
         token_data: dict[str, Any] = json.loads(token_data_str)
 
+        # Restore expiry so creds.expired works correctly for long-running sessions.
+        expiry: Optional[datetime.datetime] = None
+        expiry_str = token_data.get("expiry")
+        if expiry_str:
+            try:
+                expiry = datetime.datetime.fromisoformat(expiry_str)
+            except ValueError:
+                pass
+
         creds = google.oauth2.credentials.Credentials(  # type: ignore[no-untyped-call]
             token=token_data.get("token"),
             refresh_token=token_data.get("refresh_token"),
@@ -248,13 +259,40 @@ class GoogleCredentialManager:
             client_id=token_data.get("client_id"),
             client_secret=token_data.get("client_secret"),
             scopes=token_data.get("scopes"),
+            expiry=expiry,
         )
 
         if creds.expired and creds.refresh_token:
             logger.debug("Google access token expired; refreshing silently…")
-            creds.refresh(google.auth.transport.requests.Request())
+            try:
+                creds.refresh(google.auth.transport.requests.Request())
+            except Exception as refresh_exc:
+                # Catch RefreshError (invalid_grant, etc.) — the token is permanently
+                # invalid.  Clear the stored file so is_authorized() returns False and
+                # callers get a clean AuthorizationError on the next call.
+                logger.warning(
+                    "Google token refresh failed (%s) — clearing stored tokens so "
+                    "re-auth is required.",
+                    refresh_exc,
+                )
+                token_path.unlink(missing_ok=True)
+                if self._audit is not None:
+                    await self._audit.log(
+                        AuditEvent(
+                            event="oauth_refresh_failed",
+                            agent_id="google_oauth",
+                            details={
+                                "error": str(refresh_exc)[:200],
+                                "scopes": self._scopes,
+                            },
+                        )
+                    )
+                raise AuthorizationError(
+                    "Google OAuth refresh failed — the refresh token has expired or been revoked. "
+                    "Re-run 'openrattler auth google' to restore Google Workspace access."
+                ) from refresh_exc
 
-            # Re-encrypt and persist the refreshed tokens immediately.
+            # Re-encrypt and persist the refreshed tokens (including expiry) immediately.
             refreshed_data = json.dumps(
                 {
                     "token": creds.token,
@@ -263,6 +301,7 @@ class GoogleCredentialManager:
                     "client_id": creds.client_id,
                     "client_secret": creds.client_secret,
                     "scopes": list(creds.scopes or self._scopes),
+                    "expiry": creds.expiry.isoformat() if creds.expiry else None,
                 }
             )
             new_encrypted = self._encrypt(refreshed_data, passphrase)
@@ -340,6 +379,18 @@ class GoogleCredentialManager:
                     details={},
                 )
             )
+
+    def clear_tokens(self) -> None:
+        """Delete the stored token file without revoking at Google.
+
+        Used when the token is known to be permanently invalid (e.g. ``invalid_grant``)
+        so that ``is_authorized()`` returns ``False`` and the next call surfaces a clean
+        ``AuthorizationError`` rather than a cryptic API error.  Does not call the Google
+        revocation endpoint because the token is already invalid.
+        """
+        token_path = self._credentials_path / self._token_file
+        token_path.unlink(missing_ok=True)
+        logger.info("Google OAuth token file cleared — re-auth required.")
 
     # ------------------------------------------------------------------
     # Passphrase resolution
