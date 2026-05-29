@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from openrattler.models.agents import TrustLevel
 from openrattler.models.messages import UniversalMessage, create_message
@@ -29,9 +29,20 @@ from openrattler.storage.audit import AuditLog
 
 if TYPE_CHECKING:
     from openrattler.agents.creator import AgentCreator
+    from openrattler.models.agents import AgentConfig
+    from openrattler.storage.usage import UsageStore
     from openrattler.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Module-level UsageStore — set by configure_usage_store() at startup.
+_usage_store: Optional["UsageStore"] = None
+
+
+def configure_usage_store(store: Optional["UsageStore"]) -> None:
+    """Wire the shared UsageStore into this module so research turns are recorded."""
+    global _usage_store
+    _usage_store = store
 
 
 class ResearchTools:
@@ -98,7 +109,12 @@ class ResearchTools:
     # Tool handler
     # ------------------------------------------------------------------
 
-    async def _research_query(self, query: str, max_results: int = 3) -> str:
+    async def _research_query(
+        self,
+        query: str,
+        max_results: int = 3,
+        agent_config: Optional["AgentConfig"] = None,
+    ) -> str:
         """Execute a research query and return a formatted result string.
 
         Pipeline:
@@ -108,11 +124,20 @@ class ResearchTools:
         4. Format and return the result.
 
         Never raises — all error paths return a human-readable error string.
+
+        ``agent_config`` is injected by the executor (piece 42.2) when present.
+        It provides the caller's session_key which becomes the research agent's
+        parent_session_key for token economy linkage.
         """
         # Lazy import to avoid top-level circular deps (same pattern as creator.py)
         from openrattler.agents.research.models import ResearchRequest
 
         trace_id = uuid.uuid4().hex
+
+        # Derive parent_session_key from the injected agent_config when available.
+        parent_session_key: Optional[str] = (
+            agent_config.session_key if agent_config is not None else None
+        )
 
         # Step 1: Build the UM that create_research_agent() validates.
         # trust_level="main" is safe here: the tool itself requires main trust,
@@ -130,7 +155,12 @@ class ResearchTools:
 
         # Step 2: Spawn the ResearchAgent through the authorised pathway.
         try:
-            agent = await self._creator.create_research_agent(request_msg, self._audit)
+            agent = await self._creator.create_research_agent(
+                request_msg,
+                self._audit,
+                usage_store=_usage_store,
+                parent_session_key=parent_session_key,
+            )
         except Exception as exc:
             logger.error("research_query: failed to spawn ResearchAgent: %s", exc)
             return f"Research failed: could not spawn research agent — {exc}"

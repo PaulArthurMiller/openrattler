@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
 
@@ -43,6 +43,9 @@ from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage, create_message
 from openrattler.security.patterns import scan_for_suspicious_content
 from openrattler.storage.audit import AuditLog
+
+if TYPE_CHECKING:
+    from openrattler.storage.usage import UsageStore
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,8 @@ class SummarizerAgent:
         config: SummarizerAgentConfig,
         audit: AuditLog,
         provider: Optional[LLMProvider] = None,
+        usage_store: Optional["UsageStore"] = None,
+        parent_session_key: Optional[str] = None,
     ) -> None:
         skill_path = config.skill_prompt_path
         if not skill_path.exists():
@@ -79,6 +84,14 @@ class SummarizerAgent:
         self._config = config
         self._audit = audit
         self._provider = provider
+        self._usage_store = usage_store
+        self._parent_session_key = parent_session_key
+        # Per-turn token accumulators — reset at the start of each run() call.
+        self._turn_prompt_tokens: int = 0
+        self._turn_completion_tokens: int = 0
+        self._turn_cost_usd: float = 0.0
+        self._turn_model: str = ""
+        self._turn_llm_calls: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -110,8 +123,16 @@ class SummarizerAgent:
         - Never raises; all errors returned as error-typed UMs.
         - Output scanning always runs before the response UM is built.
         """
+        # Reset per-turn token accumulators for this run.
+        self._turn_prompt_tokens = 0
+        self._turn_completion_tokens = 0
+        self._turn_cost_usd = 0.0
+        self._turn_model = ""
+        self._turn_llm_calls = 0
+        summarizer_session_key = f"agent:summarizer:{(trace_id or 'no-trace')[:12]}"
+
         try:
-            return await self._run(um, trace_id, from_agent, to_agent, session_key)
+            result_um = await self._run(um, trace_id, from_agent, to_agent, session_key)
         except Exception as exc:
             logger.exception("SummarizerAgent unexpected error: %s", exc)
             error = SummarizerError(
@@ -119,7 +140,32 @@ class SummarizerAgent:
                 message="Unexpected error in SummarizerAgent",
                 trace_id=trace_id,
             )
-            return self._build_error_um(error, from_agent, to_agent, session_key, trace_id)
+            result_um = self._build_error_um(error, from_agent, to_agent, session_key, trace_id)
+
+        # Record token usage — runs even when the pipeline encountered an error.
+        if self._usage_store is not None and self._turn_llm_calls > 0:
+            try:
+                await self._usage_store.record_turn(
+                    {
+                        "session_key": summarizer_session_key,
+                        "agent_type": "summarizer",
+                        "channel": "summarizer",
+                        "parent_session_key": self._parent_session_key,
+                        "trace_id": trace_id,
+                        "model": self._turn_model,
+                        "prompt_tokens": self._turn_prompt_tokens,
+                        "completion_tokens": self._turn_completion_tokens,
+                        "total_tokens": self._turn_prompt_tokens + self._turn_completion_tokens,
+                        "estimated_cost_usd": self._turn_cost_usd,
+                        "llm_calls": self._turn_llm_calls,
+                        "tool_calls": [],
+                        "tool_loops": 0,
+                    }
+                )
+            except Exception as usage_exc:
+                logger.warning("SummarizerAgent: failed to record usage: %s", usage_exc)
+
+        return result_um
 
     # ------------------------------------------------------------------
     # Internal pipeline
@@ -265,6 +311,11 @@ class SummarizerAgent:
                 model=model,
                 max_tokens=1024,
             )
+            self._turn_prompt_tokens += response.usage.prompt_tokens
+            self._turn_completion_tokens += response.usage.completion_tokens
+            self._turn_cost_usd += response.usage.estimated_cost_usd
+            self._turn_model = response.model
+            self._turn_llm_calls += 1
             logger.info(
                 "SummarizerAgent: LLM produced %d chars",
                 len(response.content),

@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from openrattler.storage.usage import UsageStore
     from openrattler.tools.search.web_search_tool import WebSearchParams
 
 import httpx
@@ -117,6 +118,8 @@ class ResearchAgent:
         config: ResearchAgentConfig,
         audit: AuditLog,
         provider: Optional[LLMProvider] = None,
+        usage_store: Optional["UsageStore"] = None,
+        parent_session_key: Optional[str] = None,
     ) -> None:
         skill_path = config.skill_prompt_path
         if not skill_path.exists():
@@ -138,6 +141,14 @@ class ResearchAgent:
         # LLM provider for planning and synthesis.  None means use stub/default
         # fallbacks — preserves backward compatibility for tests without a provider.
         self._provider = provider
+        self._usage_store = usage_store
+        self._parent_session_key = parent_session_key
+        # Per-turn token accumulators — reset at the start of each run() call.
+        self._turn_prompt_tokens: int = 0
+        self._turn_completion_tokens: int = 0
+        self._turn_cost_usd: float = 0.0
+        self._turn_model: str = ""
+        self._turn_llm_calls: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,8 +202,18 @@ class ResearchAgent:
         - Session key is ephemeral; nothing is written to TranscriptStore.
         - The sanitizer is always called — the UM is not constructed before it.
         """
+        # Reset per-turn token accumulators for this run.
+        self._turn_prompt_tokens = 0
+        self._turn_completion_tokens = 0
+        self._turn_cost_usd = 0.0
+        self._turn_model = ""
+        self._turn_llm_calls = 0
+        research_session_key = f"agent:research:{(trace_id or 'no-trace')[:12]}"
+
         try:
-            return await self._run_pipeline(request, trace_id, from_agent, to_agent, session_key)
+            result_um = await self._run_pipeline(
+                request, trace_id, from_agent, to_agent, session_key
+            )
         except Exception as exc:
             logger.exception("ResearchAgent pipeline error: %s", exc)
             error = ResearchError(
@@ -201,7 +222,32 @@ class ResearchAgent:
                 query_echo=request.query,
                 trace_id=trace_id,
             )
-            return self._build_error_um(error, from_agent, to_agent, session_key, trace_id)
+            result_um = self._build_error_um(error, from_agent, to_agent, session_key, trace_id)
+
+        # Record token usage — runs even when the pipeline encountered an error.
+        if self._usage_store is not None and self._turn_llm_calls > 0:
+            try:
+                await self._usage_store.record_turn(
+                    {
+                        "session_key": research_session_key,
+                        "agent_type": "research",
+                        "channel": "research",
+                        "parent_session_key": self._parent_session_key,
+                        "trace_id": trace_id,
+                        "model": self._turn_model,
+                        "prompt_tokens": self._turn_prompt_tokens,
+                        "completion_tokens": self._turn_completion_tokens,
+                        "total_tokens": self._turn_prompt_tokens + self._turn_completion_tokens,
+                        "estimated_cost_usd": self._turn_cost_usd,
+                        "llm_calls": self._turn_llm_calls,
+                        "tool_calls": [],
+                        "tool_loops": 0,
+                    }
+                )
+            except Exception as usage_exc:
+                logger.warning("ResearchAgent: failed to record usage: %s", usage_exc)
+
+        return result_um
 
     # ------------------------------------------------------------------
     # Pipeline stages
@@ -343,6 +389,11 @@ class ResearchAgent:
                 model=model,
                 max_tokens=256,
             )
+            self._turn_prompt_tokens += response.usage.prompt_tokens
+            self._turn_completion_tokens += response.usage.completion_tokens
+            self._turn_cost_usd += response.usage.estimated_cost_usd
+            self._turn_model = response.model
+            self._turn_llm_calls += 1
             raw = response.content.strip()
             # Strip markdown code fences if the LLM wraps the JSON
             if raw.startswith("```"):
@@ -609,6 +660,11 @@ class ResearchAgent:
                 model=model,
                 max_tokens=1024,
             )
+            self._turn_prompt_tokens += response.usage.prompt_tokens
+            self._turn_completion_tokens += response.usage.completion_tokens
+            self._turn_cost_usd += response.usage.estimated_cost_usd
+            self._turn_model = response.model
+            self._turn_llm_calls += 1
             logger.info(
                 "_synthesize: LLM produced %d chars: %r",
                 len(response.content),

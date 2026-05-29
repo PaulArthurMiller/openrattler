@@ -938,6 +938,12 @@ async def build_application(
     )
     ResearchTools(creator=creator, audit=audit).register_all(registry)
 
+    from openrattler.tools.builtin.research_tools import (
+        configure_usage_store as configure_research_usage_store,
+    )
+
+    configure_research_usage_store(usage_store)
+
     # 11e. SummarizerAgent — wire into session tools so session_read_self and
     #      session_lookup can summarize transcripts on demand.
     from openrattler.agents.summarizer.agent import SummarizerAgent
