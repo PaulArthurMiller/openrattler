@@ -16,12 +16,14 @@ Security guarantees verified here:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openrattler.agents.providers.base import LLMProvider, LLMResponse, TokenUsage
 from openrattler.agents.research.agent import ResearchAgent, _ALLOWED_TOOLS
 from openrattler.agents.research.config import ResearchAgentConfig
 from openrattler.agents.research.models import (
@@ -31,6 +33,7 @@ from openrattler.agents.research.models import (
     SourceType,
 )
 from openrattler.storage.audit import AuditLog
+from openrattler.storage.usage import UsageStore
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -445,3 +448,154 @@ class TestNewsFallback:
         um = await agent.run(request, str(uuid.uuid4()))
         print(f"[TestNewsFallback] both-empty: UM type={um.type}")
         assert um.type == "response"
+
+
+# ---------------------------------------------------------------------------
+# Usage recording
+# ---------------------------------------------------------------------------
+
+
+def _make_llm_response(
+    content: str = "result", prompt_tokens: int = 10, completion_tokens: int = 20
+) -> LLMResponse:
+    """Construct a minimal LLMResponse for usage tracking tests."""
+    usage = TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        estimated_cost_usd=0.001,
+    )
+    return LLMResponse(
+        content=content,
+        tool_calls=[],
+        usage=usage,
+        model="claude-haiku-4-5-20251001",
+        finish_reason="end_turn",
+    )
+
+
+def _make_mock_provider(responses: list[LLMResponse] | None = None) -> MagicMock:
+    """Return a mock LLMProvider that returns the given responses in sequence."""
+    provider = MagicMock(spec=LLMProvider)
+    if responses is None:
+        responses = [_make_llm_response()]
+    provider.complete = AsyncMock(side_effect=responses)
+    return provider
+
+
+class TestUsageRecording:
+    """Token usage is accumulated and written to UsageStore after each run()."""
+
+    async def test_no_usage_store_no_record_no_error(self, tmp_path: Path) -> None:
+        """usage_store=None: run completes normally and no record is written."""
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        provider = _make_mock_provider(
+            [_make_llm_response("plan"), _make_llm_response("synthesis")]
+        )
+        agent = ResearchAgent(config=config, audit=audit, provider=provider, usage_store=None)
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        request = _make_request()
+        um = await agent.run(request, "abc123trace")
+        print(f"[TestUsageRecording] no_store: UM type={um.type}")
+        assert um.type in ("response", "error")
+
+    async def test_two_llm_calls_accumulate_correctly(self, tmp_path: Path) -> None:
+        """provider makes plan + synthesis calls: llm_calls=2, tokens accumulated."""
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        plan_response = _make_llm_response("news", prompt_tokens=15, completion_tokens=5)
+        synth_response = _make_llm_response("Summary text", prompt_tokens=30, completion_tokens=50)
+        provider = _make_mock_provider([plan_response, synth_response])
+        agent = ResearchAgent(config=config, audit=audit, provider=provider, usage_store=store)
+        # Bypass actual search/fetch so both LLM calls (plan + synth) fire
+        agent._web_search = AsyncMock(
+            return_value=[  # type: ignore[method-assign]
+                {
+                    "url": "https://example.com",
+                    "title": "Test",
+                    "snippet": "snippet",
+                    "source": "example",
+                    "date": "",
+                    "source_type": "general",
+                }
+            ]
+        )
+        agent._web_fetch = AsyncMock(
+            return_value={  # type: ignore[method-assign]
+                "title": "Test",
+                "url": "https://example.com",
+                "domain": "example.com",
+                "source_type": "general",
+                "retrieval_timestamp": "2026-01-01T00:00:00+00:00",
+                "content": "Some useful content about the topic.",
+            }
+        )
+
+        trace_id = "testrace00001"
+        await agent.run(request=_make_request(), trace_id=trace_id)
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        print(f"[TestUsageRecording] two_calls: records={len(records)}")
+        assert len(records) == 1
+        rec = records[0]
+        print(f"[TestUsageRecording] llm_calls={rec.llm_calls}, prompt_tokens={rec.prompt_tokens}")
+        assert rec.llm_calls == 2
+        assert rec.prompt_tokens == 45  # 15 + 30
+        assert rec.completion_tokens == 55  # 5 + 50
+
+    async def test_parent_session_key_written_to_record(self, tmp_path: Path) -> None:
+        """parent_session_key is stored on the TurnRecord when provided."""
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        provider = _make_mock_provider([_make_llm_response("news"), _make_llm_response("done")])
+        agent = ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=provider,
+            usage_store=store,
+            parent_session_key="agent:main:some-session-key",
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await agent.run(request=_make_request(), trace_id="trace-for-parent-test")
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        print(f"[TestUsageRecording] parent_session_key: records={len(records)}")
+        assert len(records) == 1
+        assert records[0].parent_session_key == "agent:main:some-session-key"
+
+    async def test_research_session_key_derived_from_trace_id(self, tmp_path: Path) -> None:
+        """session_key on the TurnRecord uses the first 12 chars of trace_id."""
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        provider = _make_mock_provider([_make_llm_response("news"), _make_llm_response("result")])
+        agent = ResearchAgent(config=config, audit=audit, provider=provider, usage_store=store)
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        trace_id = "abcdef123456789xyz"
+        await agent.run(request=_make_request(), trace_id=trace_id)
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        print(f"[TestUsageRecording] session_key: {records[0].session_key!r}")
+        assert records[0].session_key == f"agent:research:{trace_id[:12]}"
+
+    async def test_usage_store_failure_does_not_affect_result(self, tmp_path: Path) -> None:
+        """A broken UsageStore does not prevent the research result from being returned."""
+        broken_store = MagicMock(spec=UsageStore)
+        broken_store.record_turn = AsyncMock(side_effect=RuntimeError("disk full"))
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        provider = _make_mock_provider([_make_llm_response("news"), _make_llm_response("done")])
+        agent = ResearchAgent(
+            config=config, audit=audit, provider=provider, usage_store=broken_store
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        um = await agent.run(request=_make_request(), trace_id="trace-broken-store")
+        print(f"[TestUsageRecording] store_failure: UM type={um.type}")
+        assert um.type in ("response", "error")

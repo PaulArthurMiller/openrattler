@@ -80,6 +80,7 @@ from openrattler.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from openrattler.agents.research.agent import ResearchAgent
+    from openrattler.storage.usage import UsageStore
 
 # ---------------------------------------------------------------------------
 # Trust levels that may request research_query spawns (>= main)
@@ -334,6 +335,8 @@ class AgentCreator:
         self,
         message: UniversalMessage,
         audit: AuditLog,
+        usage_store: Optional["UsageStore"] = None,
+        parent_session_key: Optional[str] = None,
     ) -> "ResearchAgent":
         """Validate a research_query UM and return a configured ResearchAgent.
 
@@ -421,7 +424,13 @@ class AgentCreator:
         # 7. Instantiate and return (import here to avoid top-level circular deps)
         from openrattler.agents.research.agent import ResearchAgent
 
-        return ResearchAgent(config=config, audit=audit, provider=self._provider)
+        return ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=self._provider,
+            usage_store=usage_store,
+            parent_session_key=parent_session_key,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers

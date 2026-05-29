@@ -19,6 +19,25 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-29 — Piece 45.3 Research Agent Token Capture ✅
+
+**Branch:** `milestone-45.3-research-agent-token-capture` | **PR:** pending
+
+Wired `UsageStore` into `ResearchAgent` and `SummarizerAgent` so their direct `provider.complete()` calls produce `TurnRecord`s linked back to the parent main-agent session:
+
+**Files modified:**
+- `openrattler/agents/research/agent.py` — added `usage_store` and `parent_session_key` to `__init__`; per-turn accumulators reset at start of `run()`; accumulators updated after each `provider.complete()` call in `_plan_search` and `_synthesize`; `record_turn()` called after pipeline completes (even on error paths), wrapped in try/except.
+- `openrattler/agents/summarizer/agent.py` — same pattern. Synthetic session key `agent:summarizer:{trace_id[:12]}`.
+- `openrattler/agents/creator.py` — `create_research_agent()` gains `usage_store` and `parent_session_key` optional params, forwarded to `ResearchAgent.__init__`.
+- `openrattler/tools/builtin/research_tools.py` — added `_usage_store` module-level var, `configure_usage_store()` function; `_research_query()` gains `agent_config: Optional[AgentConfig] = None` for executor injection; passes `_usage_store` and `agent_config.session_key` as `parent_session_key` to `create_research_agent()`.
+- `openrattler/startup.py` — calls `configure_research_usage_store(usage_store)` after `ResearchTools` registration.
+
+**Tests:** 5 new `TestUsageRecording` tests, 2423 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 45.4 (Report Generator).
+
+---
+
 ## /build 2026-05-29 — Piece 45.2 AgentRuntime Token Accumulation ✅
 
 **Branch:** `milestone-45.2-agentruntime-token-accumulation` | **PR:** pending
