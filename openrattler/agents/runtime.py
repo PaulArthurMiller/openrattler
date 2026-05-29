@@ -34,6 +34,7 @@ from openrattler.models.audit import AuditEvent
 from openrattler.models.messages import UniversalMessage, create_message
 from openrattler.models.sessions import Session
 from openrattler.models.tools import ToolDefinition
+from openrattler.models.usage import infer_channel_and_agent
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.transcripts import TranscriptStore
@@ -42,6 +43,7 @@ from openrattler.tools.executor import ToolExecutor
 if TYPE_CHECKING:
     from openrattler.identity.loader import IdentityLoader
     from openrattler.storage.social import SocialStore
+    from openrattler.storage.usage import UsageStore
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ class AgentRuntime:
         audit_log: AuditLog,
         social_store: Optional["SocialStore"] = None,
         identity_loader: Optional["IdentityLoader"] = None,
+        usage_store: Optional["UsageStore"] = None,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -84,6 +87,7 @@ class AgentRuntime:
         self._audit = audit_log
         self._social_store = social_store
         self._identity_loader = identity_loader
+        self._usage_store = usage_store
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,6 +145,14 @@ class AgentRuntime:
         tool_loop_count = 0
         last_response: Optional[LLMResponse] = None
 
+        # Per-turn token usage accumulators — summed across all LLM calls in the turn.
+        _prompt_tokens: int = 0
+        _completion_tokens: int = 0
+        _cost_usd: float = 0.0
+        _model: str = ""
+        _llm_calls: int = 0
+        _all_tool_names: list[str] = []
+
         # Create a per-turn config copy with the current session key so that
         # approval requests, audit events, and heartbeat bypass checks reflect
         # the actual session rather than the static construction-time config.
@@ -161,6 +173,11 @@ class AgentRuntime:
                 messages=messages,
                 tools=tools_arg,
             )
+            _prompt_tokens += last_response.usage.prompt_tokens
+            _completion_tokens += last_response.usage.completion_tokens
+            _cost_usd += last_response.usage.estimated_cost_usd
+            _model = last_response.model
+            _llm_calls += 1
 
             # 4. Tool loop
             while last_response.tool_calls and tool_loop_count < _MAX_TOOL_LOOPS:
@@ -170,9 +187,12 @@ class AgentRuntime:
                 messages.append(self._assistant_tool_call_message(last_response))
 
                 # Execute each tool call and add results.
+                # Collect tool names before execution — we want to know what was
+                # requested, not just what succeeded (dead-stops, denials still count).
                 # Inject trace_id from the originating UniversalMessage so
                 # approval audit events can be correlated end-to-end.
                 for tc in last_response.tool_calls:
+                    _all_tool_names.append(tc.tool_name)
                     tc = tc.model_copy(update={"trace_id": user_message.trace_id})
                     tool_result = await self._tool_executor.execute(session_config, tc)
                     result_content = (
@@ -193,6 +213,11 @@ class AgentRuntime:
                     messages=messages,
                     tools=tools_arg,
                 )
+                _prompt_tokens += last_response.usage.prompt_tokens
+                _completion_tokens += last_response.usage.completion_tokens
+                _cost_usd += last_response.usage.estimated_cost_usd
+                _model = last_response.model
+                _llm_calls += 1
 
             # 5. Detect loop-limit overflow
             exceeded = bool(last_response.tool_calls) and tool_loop_count >= _MAX_TOOL_LOOPS
@@ -262,7 +287,30 @@ class AgentRuntime:
             )
         )
 
-        # 8. Return response
+        # 8. Record token usage (after audit log, non-blocking — never delays response).
+        if self._usage_store is not None and _llm_calls > 0:
+            try:
+                channel, agent_type = infer_channel_and_agent(session_key)
+                await self._usage_store.record_turn(
+                    {
+                        "session_key": session_key,
+                        "agent_type": agent_type,
+                        "channel": channel,
+                        "trace_id": user_message.trace_id,
+                        "model": _model,
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _completion_tokens,
+                        "total_tokens": _prompt_tokens + _completion_tokens,
+                        "estimated_cost_usd": _cost_usd,
+                        "llm_calls": _llm_calls,
+                        "tool_calls": _all_tool_names,
+                        "tool_loops": tool_loop_count,
+                    }
+                )
+            except Exception as usage_exc:
+                logger.warning("AgentRuntime: failed to record usage: %s", usage_exc)
+
+        # 9. Return response
         return assistant_msg
 
     # ------------------------------------------------------------------

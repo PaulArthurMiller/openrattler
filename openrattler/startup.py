@@ -698,6 +698,11 @@ async def build_application(
     # 3. AuditLog.
     audit = AuditLog(workspace_dir / "audit" / "audit.jsonl")
 
+    # 3b. UsageStore — append-only JSONL log for per-turn token economy data.
+    from openrattler.storage.usage import UsageStore
+
+    usage_store = UsageStore(workspace_dir / "usage" / "usage_log.jsonl")
+
     # 4. TranscriptStore + MemoryStore.
     transcript_store = TranscriptStore(workspace_dir / "sessions")
     memory_store = MemoryStore(workspace_dir / "memory")
@@ -959,6 +964,7 @@ async def build_application(
         audit_log=audit,
         social_store=social_store,
         identity_loader=identity_loader,
+        usage_store=usage_store,
     )
 
     # 13. Scheduler + processors.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,7 @@ from openrattler.models.tools import ToolCall, ToolDefinition
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
 from openrattler.storage.transcripts import TranscriptStore
+from openrattler.storage.usage import UsageStore
 from openrattler.tools.executor import ToolExecutor
 from openrattler.tools.registry import ToolRegistry
 
@@ -76,6 +78,7 @@ def _make_runtime(
     *,
     extra_tools: list[tuple[ToolDefinition, object]] | None = None,
     allowed_tools: list[str] | None = None,
+    usage_store: UsageStore | None = None,
 ) -> AgentRuntime:
     reg = ToolRegistry()
     if extra_tools:
@@ -102,6 +105,7 @@ def _make_runtime(
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         memory_store=MemoryStore(tmp_path / "memory"),
         audit_log=log,
+        usage_store=usage_store,
     )
 
 
@@ -431,3 +435,153 @@ class TestToolLoopSafety:
 
         events = await runtime._audit.query(event_type="agent_turn")
         assert events[0].details["exceeded_loop_limit"] is True
+
+
+# ---------------------------------------------------------------------------
+# process_message — token usage recording
+# ---------------------------------------------------------------------------
+
+
+class TestUsageRecording:
+    async def test_no_tools_writes_one_record_with_llm_calls_one(self, tmp_path: Path) -> None:
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        runtime = _make_runtime(
+            tmp_path,
+            _mock_provider(_text_response("hi")),
+            usage_store=store,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg())
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        assert len(records) == 1
+        print(f"[test] llm_calls={records[0].llm_calls}, tool_calls={records[0].tool_calls}")
+        assert records[0].llm_calls == 1
+        assert records[0].tool_calls == []
+
+    async def test_two_tool_calls_recorded_in_tool_calls_list(self, tmp_path: Path) -> None:
+        async def handler_a(**kwargs: object) -> str:
+            return "a"
+
+        async def handler_b(**kwargs: object) -> str:
+            return "b"
+
+        td_a = ToolDefinition(
+            name="tool_a",
+            description="",
+            parameters={},
+            trust_level_required=TrustLevel.main,
+        )
+        td_b = ToolDefinition(
+            name="tool_b",
+            description="",
+            parameters={},
+            trust_level_required=TrustLevel.main,
+        )
+
+        # First response has two tool calls in a single loop; second response is final.
+        first_response = LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(tool_name="tool_a", arguments={}, call_id="c1"),
+                ToolCall(tool_name="tool_b", arguments={}, call_id="c2"),
+            ],
+            usage=_usage(),
+            model="test-model",
+            finish_reason="tool_calls",
+        )
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        runtime = _make_runtime(
+            tmp_path,
+            _mock_provider(first_response, _text_response("done")),
+            extra_tools=[(td_a, handler_a), (td_b, handler_b)],
+            allowed_tools=["tool_a", "tool_b"],
+            usage_store=store,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg())
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        assert len(records) == 1
+        print(f"[test] tool_calls={records[0].tool_calls}")
+        assert records[0].tool_calls == ["tool_a", "tool_b"]
+
+    async def test_multi_loop_accumulates_prompt_tokens(self, tmp_path: Path) -> None:
+        async def handler(**kwargs: object) -> str:
+            return "ok"
+
+        td = ToolDefinition(
+            name="looper",
+            description="",
+            parameters={},
+            trust_level_required=TrustLevel.main,
+        )
+
+        # Two tool loops: initial call + loop1 call + final (no-tool) call = 3 total calls.
+        # Each call has 10 prompt_tokens → expected total = 30.
+        provider = _mock_provider(
+            _tool_response("looper", {}, "c1"),
+            _tool_response("looper", {}, "c2"),
+            _text_response("done"),
+        )
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            extra_tools=[(td, handler)],
+            allowed_tools=["looper"],
+            usage_store=store,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg())
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        assert len(records) == 1
+        print(
+            f"[test] llm_calls={records[0].llm_calls}, " f"prompt_tokens={records[0].prompt_tokens}"
+        )
+        assert records[0].llm_calls == 3
+        assert records[0].prompt_tokens == 30  # 3 calls × 10 tokens each
+
+    async def test_usage_store_none_no_record_no_error(self, tmp_path: Path) -> None:
+        runtime = _make_runtime(
+            tmp_path,
+            _mock_provider(_text_response("ok")),
+            usage_store=None,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        result = await runtime.process_message(session, _user_msg())
+        # Response returned normally — no crash because usage_store is None.
+        assert result.type == "response"
+
+    async def test_usage_store_failure_does_not_affect_response(self, tmp_path: Path) -> None:
+        broken_store = MagicMock(spec=UsageStore)
+        broken_store.record_turn = AsyncMock(side_effect=RuntimeError("disk full"))
+
+        runtime = _make_runtime(
+            tmp_path,
+            _mock_provider(_text_response("ok")),
+            usage_store=broken_store,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        result = await runtime.process_message(session, _user_msg())
+        print(f"[test] result.type={result.type}")
+        assert result.type == "response"
+        assert result.params["content"] == "ok"
+
+    async def test_turn_number_increments_across_two_turns(self, tmp_path: Path) -> None:
+        store = UsageStore(tmp_path / "usage" / "usage_log.jsonl")
+        runtime = _make_runtime(
+            tmp_path,
+            _mock_provider(_text_response("first"), _text_response("second")),
+            usage_store=store,
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg("turn1"))
+        await runtime.process_message(session, _user_msg("turn2"))
+
+        records = await store.load_since(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        assert len(records) == 2
+        turn_numbers = [r.turn_number for r in records]
+        print(f"[test] turn_numbers={turn_numbers}")
+        assert turn_numbers == [1, 2]
