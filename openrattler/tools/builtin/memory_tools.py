@@ -479,7 +479,9 @@ class NarrativeMemoryTools:
             return f"Error: failed to write MEMORY.md: {exc}"
 
         # Build status response
-        return self._status_message("MEMORY.md", total_tokens, max_file, max_write if mode == "append" else None)
+        return self._status_message(
+            "MEMORY.md", total_tokens, max_file, max_write if mode == "append" else None
+        )
 
     async def _update_user_profile(self, content: str) -> str:
         """Handler for update_user_profile.
@@ -778,7 +780,9 @@ class NarrativeMemoryTools:
         return f"(no diff — content identical)"
 
     @staticmethod
-    def _status_message(filename: str, used_tokens: int, max_tokens: int, max_write: int | None = None) -> str:
+    def _status_message(
+        filename: str, used_tokens: int, max_tokens: int, max_write: int | None = None
+    ) -> str:
         """Build a status string reporting token usage with optional pruning hint."""
         msg = f"Written. {filename} is now approximately {used_tokens}/{max_tokens} tokens."
         if max_write is not None:
