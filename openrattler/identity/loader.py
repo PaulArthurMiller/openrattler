@@ -176,36 +176,52 @@ class IdentityLoader:
     def _assemble_system_prompt(self) -> str:
         """Synchronous assembly — called inside asyncio.to_thread."""
         parts: list[str] = []
+        _section_sizes: dict[str, int] = {}
 
         soul = self._load_template_file("SOUL.md")
         if soul:
             parts.append(soul)
+            _section_sizes["SOUL.md"] = len(soul)
 
         identity = self._load_template_file("IDENTITY.md")
         if identity:
             parts.append(identity)
+            _section_sizes["IDENTITY.md"] = len(identity)
 
         # USER.md or BOOTSTRAP.md
         if self._is_bootstrap_needed():
             bootstrap = self._load_template_file("BOOTSTRAP.md")
             if bootstrap:
                 parts.append(bootstrap)
+                _section_sizes["BOOTSTRAP.md"] = len(bootstrap)
         else:
             user = self._load_runtime_file("USER.md")
             if user:
                 parts.append(user)
+                _section_sizes["USER.md"] = len(user)
 
         # Generated context block
         context = self._generate_context_section()
         if context:
             parts.append(context)
+            _section_sizes["context_block"] = len(context)
 
         # Narrative working memory
         memory = self._load_runtime_file("MEMORY.md")
         if memory:
             parts.append(f"## Working Memory\n\n{memory}")
+            _section_sizes["MEMORY.md"] = len(memory)
 
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        for name, chars in _section_sizes.items():
+            logger.info("PROMPT_SECTION file=%s chars=%d ~tokens=%d", name, chars, chars // 4)
+        logger.info(
+            "PROMPT_SECTION TOTAL chars=%d ~tokens=%d sections=%s",
+            len(result),
+            len(result) // 4,
+            list(_section_sizes.keys()),
+        )
+        return result
 
     def _load_heartbeat(self) -> str:
         """Synchronous HEARTBEAT.md load — called inside asyncio.to_thread."""
