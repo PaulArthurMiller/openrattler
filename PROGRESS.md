@@ -19,6 +19,34 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-29 — Piece 45.2 AgentRuntime Token Accumulation ✅
+
+**Branch:** `milestone-45.2-agentruntime-token-accumulation` | **PR:** pending
+
+Wired `UsageStore` into `AgentRuntime` so every agent turn produces one `TurnRecord`:
+
+**Files modified:**
+- `openrattler/agents/runtime.py` — added `usage_store: Optional[UsageStore]` constructor
+  parameter; per-turn accumulators (`_prompt_tokens`, `_completion_tokens`, `_cost_usd`,
+  `_model`, `_llm_calls`, `_all_tool_names`) accumulated across the initial LLM call and
+  every iteration of the tool loop; `_all_tool_names` populated before execution (captures
+  what was requested, not just what succeeded); `record_turn()` called after audit log,
+  wrapped in try/except — usage recording never delays or breaks the response.
+- `openrattler/startup.py` — step 3b: `UsageStore` created at
+  `workspace_dir/usage/usage_log.jsonl`; passed to `AgentRuntime` at step 12.
+- `openrattler/cli/chat.py` — `usage_dir` created alongside other workspace dirs;
+  `UsageStore` built and passed to `AgentRuntime` so CLI sessions also produce records.
+- `tests/test_agents/test_runtime.py` — 6 new `TestUsageRecording` tests covering:
+  no-tool turn writes `llm_calls=1`, two tool calls captured in `tool_calls` list,
+  multi-loop turn accumulates `prompt_tokens` across all calls, `None` store → no error,
+  store failure → response returned normally, turn_number increments per session.
+
+**Tests:** 6 new, 2418 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 45.3 (Research Agent token capture).
+
+---
+
 ## /planner 2026-05-29 — Token Economy Instrumentation (45.x) ✅
 
 **Plan written:** BUILD-PLAN.md (45.x section added)

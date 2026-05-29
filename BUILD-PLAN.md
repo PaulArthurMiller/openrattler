@@ -2691,9 +2691,9 @@ For the **daily scheduled report**: hook into the existing `ProcessorScheduler` 
 
 ## Status
 
-Current milestone: **45.2 — not started**
+Current milestone: **45.3 — not started**
 Piece 45.1: ✅ complete — PR pending
-Piece 45.2: ⏳ not started (depends on 45.1)
+Piece 45.2: ✅ complete — PR pending
 Piece 45.3: ⏳ not started (depends on 45.1)
 Piece 45.4: ⏳ not started (depends on 45.1)
 Piece 45.5: ⏳ not started (depends on 45.2, 45.3, 45.4)

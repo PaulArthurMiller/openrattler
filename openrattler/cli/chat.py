@@ -210,10 +210,11 @@ class CLIChat:
         sessions_dir = self._workspace_dir / "sessions"
         memory_dir = self._workspace_dir / "memory"
         audit_dir = self._workspace_dir / "audit"
+        usage_dir = self._workspace_dir / "usage"
         identity_dir = self._workspace_dir / "identity"
         audit_path = audit_dir / "audit.jsonl"
 
-        for d in (sessions_dir, memory_dir, audit_dir, identity_dir):
+        for d in (sessions_dir, memory_dir, audit_dir, usage_dir, identity_dir):
             d.mkdir(parents=True, exist_ok=True)
 
         # Ensure template and runtime identity files exist (idempotent).
@@ -370,6 +371,11 @@ class CLIChat:
                 "Calendar, Drive, Gmail, and Tasks tools registered."
             )
 
+        # --- UsageStore ----------------------------------------------------
+        from openrattler.storage.usage import UsageStore
+
+        usage_store = UsageStore(usage_dir / "usage_log.jsonl")
+
         # --- Runtime -------------------------------------------------------
         executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
 
@@ -386,6 +392,7 @@ class CLIChat:
                 tool_registry=registry,
                 config=config,
             ),
+            usage_store=usage_store,
         )
         self._session = await self._runtime.initialize_session(CLI_SESSION_KEY)
         self._audit_log = audit_log
