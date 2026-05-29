@@ -19,6 +19,55 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /planner 2026-05-29 — Token Economy Instrumentation (45.x) ✅
+
+**Plan written:** BUILD-PLAN.md (45.x section added)
+
+Designed five build pieces for a full token usage tracking and reporting system:
+
+- **45.1 TurnRecord + UsageStore** — `openrattler/models/usage.py` (TurnRecord model, `infer_channel_and_agent()` helper) and `openrattler/storage/usage.py` (UsageStore, JSONL append-only, per-session turn_number assignment).
+
+- **45.2 AgentRuntime Integration** — Accumulate token usage across ALL `provider.complete()` calls in a turn (initial call + every tool loop iteration). Record one `TurnRecord` per turn. Inject `UsageStore` into `AgentRuntime`. Wire in `startup.py` and `CLIChat`.
+
+- **45.3 Research Agent Token Capture** — `ResearchAgent` (and `SummarizerAgent`) call `provider.complete()` directly, bypassing `AgentRuntime`. Add `usage_store` + `parent_session_key` parameters to both agents. Synthetic session key `agent:research:{trace_id[:12]}` links research turns back to the parent main-agent session.
+
+- **45.4 Report Generator** — `openrattler/reports/usage_report.py` reads TurnRecords, groups by session, computes context growth (prompt_tokens trend per turn), builds a human-readable plain-text report with: summary totals, cost by channel, cost by agent, active sessions section, closed session details, context accumulation warnings (flags sessions where prompt_tokens grew >500%).
+
+- **45.5 Email Delivery + Scheduling** — `UsageReportConfig` in `loader.py` (enabled/send_on_shutdown/scheduled_hour_utc/idle_timeout). Report sent at server shutdown and on a 24h schedule via `ProcessorScheduler`. Uses existing email infrastructure.
+
+**Key insight surfaced by the plan:** Slack/email sessions use a persistent session key — `TranscriptStore.load()` reloads the full conversation history on every message. Heartbeat creates a fresh key each cycle. This is why Slack/email is expensive and heartbeat is cheap. The context growth metric (prompt_tokens per turn, rising) is the smoking gun for context accumulation.
+
+**Next step:** `/build` to start Piece 45.2 (AgentRuntime token accumulation).
+
+---
+
+## /build 2026-05-29 — Piece 45.1 TurnRecord + UsageStore ✅
+
+**Branch:** `milestone-45.1-turnrecord-usagestore` | **PR:** pending
+
+Built the storage foundation for token economy instrumentation:
+
+**Files created:**
+- `openrattler/models/usage.py` — `TurnRecord` Pydantic model (all per-turn token fields:
+  `session_key`, `agent_type`, `channel`, `parent_session_key`, `trace_id`, `turn_number`,
+  `model`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `estimated_cost_usd`,
+  `llm_calls`, `tool_calls`, `tool_loops`); `infer_channel_and_agent(session_key)` helper
+  that parses the session key format to derive (channel, agent_type) for all known patterns.
+- `openrattler/storage/usage.py` — `UsageStore`: append-only JSONL store at a single
+  `log_path`; `record_turn(record_data)` derives `turn_number` via `count_for_session()`,
+  stamps `recorded_at` at write time, validates via the model before writing; `load_since(since,
+  max_records)` filters by `recorded_at >= since`; `count_for_session(session_key)` reads
+  full file to count matching records. Single asyncio Lock + `asyncio.to_thread` pattern
+  matching TranscriptStore.
+- `tests/test_storage/test_usage_store.py` — 25 tests covering all patterns in
+  `infer_channel_and_agent`, JSONL round-trip, directory auto-creation, UTC timestamps,
+  turn_number increments per session, turn_number independence across sessions,
+  `load_since` filtering/capping/missing-file handling, `count_for_session`.
+
+**Tests:** 25 new, 2412 total — all passing. mypy + black clean.
+
+---
+
 ## 2026-05-25 — Weather MCP Server Enhancement ✅
 
 **Branch:** `claude-enhance-weather-tools` | **PR:** pending
