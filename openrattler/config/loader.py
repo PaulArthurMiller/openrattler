@@ -947,6 +947,60 @@ class GoogleConfig(BaseModel):
         return v
 
 
+# ---------------------------------------------------------------------------
+# UsageReportConfig
+# ---------------------------------------------------------------------------
+
+
+class UsageReportConfig(BaseModel):
+    """Configuration for the automated token economy usage report (piece 45.5).
+
+    When ``enabled`` is True and an email channel is configured, a plain-text
+    token usage report is emailed at server shutdown and on a daily schedule.
+
+    Security notes:
+    - The report contains only aggregate token counts and cost estimates.
+      No message content, user data, or credentials are included.
+    - ``recipient_email`` defaults to the email channel's ``default_to_address``
+      so the report goes to the configured owner without extra setup.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether usage reports are generated and sent.",
+    )
+    send_on_shutdown: bool = Field(
+        default=True,
+        description="Send a report when the server stops cleanly.",
+    )
+    scheduled_hour_utc: int = Field(
+        default=8,
+        ge=0,
+        le=23,
+        description="Hour of day (UTC, 0-23) to send the daily digest. Default 8 (08:00 UTC).",
+    )
+    idle_session_timeout_minutes: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "Sessions with no activity for this many minutes are classified as 'closed' "
+            "in the report.  Active sessions are highlighted separately."
+        ),
+    )
+    report_window_hours: int = Field(
+        default=24,
+        ge=1,
+        description="How many hours back the report window covers.",
+    )
+    recipient_email: Optional[str] = Field(
+        default=None,
+        description=(
+            "Email address to send reports to.  "
+            "None → uses default_to_address from the email channel config."
+        ),
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level OpenRattler configuration.
 
@@ -1038,6 +1092,13 @@ class AppConfig(BaseModel):
             "Google Workspace integration configuration (piece 41.x).  "
             "Disabled by default — set enabled=true to activate.  "
             "Covers Calendar, Drive, Gmail, and Tasks."
+        ),
+    )
+    usage_report: UsageReportConfig = Field(
+        default_factory=UsageReportConfig,
+        description=(
+            "Token economy usage report configuration (piece 45.5).  "
+            "Emails a daily digest of token usage, costs, and context growth."
         ),
     )
 

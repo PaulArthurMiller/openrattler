@@ -45,7 +45,10 @@ import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+
+if TYPE_CHECKING:
+    from openrattler.reports.email_delivery import UsageReportDelivery
 
 from openrattler.agents.creator import AgentCreator
 from openrattler.agents.providers.anthropic_provider import AnthropicProvider
@@ -349,6 +352,7 @@ class ApplicationContext:
         alert_adapters_ref: Optional[list[ChannelAdapter]] = None,
         on_security_alert: Optional[Callable[[str, str], Awaitable[None]]] = None,
         google_credentials: Optional[GoogleCredentialManager] = None,
+        report_delivery: Optional["UsageReportDelivery"] = None,
     ) -> None:
         self._config = config
         self._audit = audit
@@ -360,6 +364,8 @@ class ApplicationContext:
         self._social_processor = social_processor
         #: Shared Google credential manager — None if client_secrets.json is absent.
         self.google_credentials: Optional[GoogleCredentialManager] = google_credentials
+        #: Usage report delivery — None when email is not configured or reports disabled.
+        self._report_delivery: Optional["UsageReportDelivery"] = report_delivery
 
         # Shared mutable list for alert dispatch — populated in start().
         # The same object is closed over by the urgent/security alert callbacks.
@@ -436,6 +442,21 @@ class ApplicationContext:
         if self._channel_tasks:
             await asyncio.gather(*self._channel_tasks, return_exceptions=True)
         self._channel_tasks.clear()
+
+        # Send shutdown usage report before stopping components so SMTP is still available.
+        if self._report_delivery is not None and self._config.usage_report.send_on_shutdown:
+            try:
+                await asyncio.wait_for(
+                    self._report_delivery.send_report(),
+                    timeout=10.0,
+                )
+                logger.info("ApplicationContext: usage report sent on shutdown")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "ApplicationContext: usage report send timed out — continuing shutdown"
+                )
+            except Exception as exc:
+                logger.warning("ApplicationContext: failed to send shutdown report: %s", exc)
 
         if self._scheduler is not None:
             try:
@@ -976,13 +997,26 @@ async def build_application(
     # 13. Scheduler + processors.
     #     The scheduler is created whenever at least one processor is enabled.
     #     Heartbeat is on by default; Social Secretary requires explicit config.
+    #     Usage report processor requires email channel to be configured.
     scheduler: Optional[ProcessorScheduler] = None
     social_processor: Optional[SocialSecretaryProcessor] = None
+    report_delivery: Optional["UsageReportDelivery"] = None
 
     heartbeat_cfg = config.heartbeat
     ss_config = config.social_secretary
 
-    if heartbeat_cfg.enabled or ss_config.enabled:
+    # Pre-check: is the email channel usable for report delivery?
+    _report_email_cfg = config.channels.get("email")
+    _email_ready_for_report = bool(
+        config.usage_report.enabled
+        and _report_email_cfg is not None
+        and _report_email_cfg.enabled
+        and _report_email_cfg.settings.get("smtp_host")
+        and _report_email_cfg.settings.get("username")
+        and _report_email_cfg.settings.get("password")
+    )
+
+    if heartbeat_cfg.enabled or ss_config.enabled or _email_ready_for_report:
 
         async def _on_urgent_alert(msg: UniversalMessage) -> None:
             dispatched = (
@@ -1025,6 +1059,36 @@ async def build_application(
                 audit=audit,
             )
             scheduler.register_processor(social_processor, ss_config.cycle_interval_minutes)
+
+        # 13.5. UsageReportProcessor — daily token economy report via email.
+        if _email_ready_for_report and _report_email_cfg is not None:
+            from openrattler.processors.usage_report import UsageReportProcessor
+            from openrattler.reports.email_delivery import UsageReportDelivery
+            from openrattler.reports.usage_report import UsageReportGenerator
+
+            report_generator = UsageReportGenerator(
+                usage_store=usage_store,
+                idle_timeout_minutes=config.usage_report.idle_session_timeout_minutes,
+            )
+            report_delivery = UsageReportDelivery(
+                generator=report_generator,
+                email_config=_report_email_cfg,
+                report_config=config.usage_report,
+            )
+            usage_report_processor = UsageReportProcessor(
+                delivery=report_delivery,
+                report_window_hours=config.usage_report.report_window_hours,
+            )
+            # 24h interval — the scheduler fires every minute but only runs when elapsed.
+            scheduler.register_processor(usage_report_processor, 24 * 60)
+            logger.info(
+                "UsageReportProcessor: daily report scheduled (24h interval, window=%dh)",
+                config.usage_report.report_window_hours,
+            )
+        elif config.usage_report.enabled:
+            logger.info(
+                "UsageReportDelivery: email channel not configured — report delivery disabled"
+            )
 
     # 14. Gateway (optional).
     gateway: Optional[Gateway] = None
@@ -1197,4 +1261,5 @@ async def build_application(
         alert_adapters_ref=_shared_alert_adapters,
         on_security_alert=_on_security_alert,
         google_credentials=google_credentials,
+        report_delivery=report_delivery,
     )

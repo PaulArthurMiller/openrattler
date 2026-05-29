@@ -23,6 +23,7 @@ from openrattler.config.loader import (
     MemoryConfig,
     SecurityConfig,
     ToolsConfig,
+    UsageReportConfig,
     load_config,
     save_config,
 )
@@ -340,3 +341,85 @@ class TestHeartbeatConfig:
     def test_log_max_retained_rejects_9(self) -> None:
         with pytest.raises(Exception):
             HeartbeatConfig(log_max_retained=9)
+
+
+# ---------------------------------------------------------------------------
+# UsageReportConfig
+# ---------------------------------------------------------------------------
+
+
+class TestUsageReportConfig:
+    def test_defaults(self) -> None:
+        """UsageReportConfig has the correct default values."""
+        cfg = UsageReportConfig()
+        assert cfg.enabled is True
+        assert cfg.send_on_shutdown is True
+        assert cfg.scheduled_hour_utc == 8
+        assert cfg.idle_session_timeout_minutes == 60
+        assert cfg.report_window_hours == 24
+        assert cfg.recipient_email is None
+        print("[OK] all defaults correct")
+
+    def test_scheduled_hour_utc_accepts_zero(self) -> None:
+        """scheduled_hour_utc=0 is the lower boundary and is valid."""
+        cfg = UsageReportConfig(scheduled_hour_utc=0)
+        assert cfg.scheduled_hour_utc == 0
+
+    def test_scheduled_hour_utc_accepts_twenty_three(self) -> None:
+        """scheduled_hour_utc=23 is the upper boundary and is valid."""
+        cfg = UsageReportConfig(scheduled_hour_utc=23)
+        assert cfg.scheduled_hour_utc == 23
+
+    def test_scheduled_hour_utc_rejects_negative(self) -> None:
+        """scheduled_hour_utc below 0 raises a ValidationError."""
+        with pytest.raises(Exception):
+            UsageReportConfig(scheduled_hour_utc=-1)
+
+    def test_scheduled_hour_utc_rejects_twenty_four(self) -> None:
+        """scheduled_hour_utc above 23 raises a ValidationError."""
+        with pytest.raises(Exception):
+            UsageReportConfig(scheduled_hour_utc=24)
+
+    def test_can_disable(self) -> None:
+        """enabled=False disables the report feature."""
+        cfg = UsageReportConfig(enabled=False)
+        assert cfg.enabled is False
+
+    def test_can_disable_shutdown_send(self) -> None:
+        """send_on_shutdown=False suppresses the shutdown report."""
+        cfg = UsageReportConfig(send_on_shutdown=False)
+        assert cfg.send_on_shutdown is False
+
+    def test_recipient_email_accepted(self) -> None:
+        """An explicit recipient_email string is stored as-is."""
+        cfg = UsageReportConfig(recipient_email="paul@example.com")
+        assert cfg.recipient_email == "paul@example.com"
+
+    def test_appconfig_has_usage_report_field(self) -> None:
+        """AppConfig includes a usage_report field with correct defaults."""
+        app = AppConfig()
+        assert isinstance(app.usage_report, UsageReportConfig)
+        assert app.usage_report.enabled is True
+        assert app.usage_report.scheduled_hour_utc == 8
+        print("[OK] AppConfig.usage_report present with defaults")
+
+    def test_usage_report_config_round_trips(self, tmp_path: Path) -> None:
+        """UsageReportConfig round-trips through save/load."""
+        path = tmp_path / "cfg.json"
+        original = AppConfig(
+            usage_report=UsageReportConfig(
+                enabled=False,
+                send_on_shutdown=False,
+                scheduled_hour_utc=12,
+                report_window_hours=48,
+                recipient_email="owner@example.com",
+            )
+        )
+        save_config(original, path)
+        loaded = load_config(path)
+        assert loaded.usage_report.enabled is False
+        assert loaded.usage_report.send_on_shutdown is False
+        assert loaded.usage_report.scheduled_hour_utc == 12
+        assert loaded.usage_report.report_window_hours == 48
+        assert loaded.usage_report.recipient_email == "owner@example.com"
+        print("[OK] UsageReportConfig round-trips correctly")

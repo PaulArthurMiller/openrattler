@@ -19,6 +19,37 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-29 — Piece 45.5 Email Delivery + Scheduling ✅
+
+**Branch:** `milestone-45.5-email-delivery-scheduling` | **PR:** pending
+
+Wired the token economy report system end-to-end: daily scheduled delivery, server-shutdown delivery, and the config model.
+
+**Files created:**
+- `openrattler/reports/email_delivery.py` — `UsageReportDelivery`:
+  - `__init__(generator, email_config, report_config)` — holds references to the report generator and delivery config
+  - `send_report(since=None)` — generates the report via `UsageReportGenerator.generate()`, sends via `_smtp_send_report()` (STARTTLS, same pattern as EmailAdapter), returns True on success
+  - Falls back to `email_config.settings["default_to_address"]` when `recipient_email` is None
+  - Catches all exceptions (generator failure, SMTP failure) → returns False, logs WARNING, never raises
+  - Subject format: `"OpenRattler Token Report — {YYYY-MM-DD}"`
+- `openrattler/processors/usage_report.py` — `UsageReportProcessor(ProactiveProcessor)`:
+  - `run_cycle()` → calls `delivery.send_report(since=now-report_window_hours)`, returns 1 on success
+  - Registered at 24h interval with `ProcessorScheduler`
+  - `get_pending_output()` returns `[]` (no alerts to surface)
+
+**Files modified:**
+- `openrattler/config/loader.py` — added `UsageReportConfig` model (enabled, send_on_shutdown, scheduled_hour_utc 0-23, idle_session_timeout_minutes, report_window_hours, recipient_email); added `usage_report: UsageReportConfig` to `AppConfig`
+- `openrattler/startup.py`:
+  - `ApplicationContext.__init__` gains `report_delivery: Optional[UsageReportDelivery] = None`
+  - `ApplicationContext.stop()` — sends shutdown report with 10s timeout before stopping components
+  - `build_application` step 13 — pre-checks email channel readiness; expands scheduler condition to `heartbeat or SS or email_ready_for_report`; step 13.5 wires `UsageReportGenerator` → `UsageReportDelivery` → `UsageReportProcessor` registered at 24h interval
+
+**Tests:** 23 new (11 in `test_email_delivery.py`, 12 in `test_loader.py`), 2477 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR — the 45.x token economy instrumentation series is complete.
+
+---
+
 ## /build 2026-05-29 — Piece 45.4 Report Generator ✅
 
 **Branch:** `milestone-45.4-report-generator` | **PR:** pending
