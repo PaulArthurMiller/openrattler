@@ -105,6 +105,14 @@ class AgentRuntime:
         """
         agent_id = self._config.agent_id
         history = await self._transcript_store.load(session_key)
+        _history_chars = sum(len(m.model_dump_json()) for m in history)
+        logger.info(
+            "SESSION_INIT session=%s | loaded_msgs=%d | history_chars=%d (~%d tok)",
+            session_key,
+            len(history),
+            _history_chars,
+            _history_chars // 4,
+        )
         alerts_section = await self._load_social_alerts(session_key)
 
         if self._identity_loader is not None:
@@ -167,6 +175,25 @@ class AgentRuntime:
             messages = self._build_messages(session)
             tool_defs = self._build_tool_defs()
             tools_arg = tool_defs if tool_defs else None
+
+            # Diagnostic: log prompt component breakdown before first LLM call
+            _diag_sys = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
+            _diag_hist = [m for m in messages if m.get("role") in ("user", "assistant")]
+            _diag_tools_json = json.dumps(tools_arg) if tools_arg else ""
+            logger.info(
+                "PROMPT_BREAKDOWN session=%s | system=%d chars (~%d tok)"
+                " | history=%d msgs %d chars (~%d tok)"
+                " | tools=%d defs %d chars (~%d tok)"
+                " | user_msg=%d chars",
+                session_key,
+                len(_diag_sys), len(_diag_sys) // 4,
+                len(_diag_hist),
+                sum(len(m.get("content", "")) for m in _diag_hist),
+                sum(len(m.get("content", "")) for m in _diag_hist) // 4,
+                len(tools_arg) if tools_arg else 0,
+                len(_diag_tools_json), len(_diag_tools_json) // 4,
+                len(user_message.params.get("content", "")),
+            )
 
             # 3. Initial LLM call
             last_response = await self._provider.complete(
@@ -309,6 +336,18 @@ class AgentRuntime:
                 )
             except Exception as usage_exc:
                 logger.warning("AgentRuntime: failed to record usage: %s", usage_exc)
+
+        logger.info(
+            "TURN_COMPLETE session=%s | prompt_tokens=%d | completion_tokens=%d"
+            " | total=%d | cost=$%.4f | llm_calls=%d | tool_loops=%d",
+            session_key,
+            _prompt_tokens,
+            _completion_tokens,
+            _prompt_tokens + _completion_tokens,
+            _cost_usd,
+            _llm_calls,
+            tool_loop_count,
+        )
 
         # 9. Return response
         return assistant_msg
