@@ -19,6 +19,32 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-05-29 — Piece 45.4 Report Generator ✅
+
+**Branch:** `milestone-45.4-report-generator` | **PR:** pending
+
+Built the `UsageReportGenerator` in a new `openrattler/reports/` package:
+
+**Files created:**
+- `openrattler/reports/__init__.py` — reports package
+- `openrattler/reports/usage_report.py` — `SessionSummary` dataclass + `UsageReportGenerator`:
+  - `generate(since, until)` — loads TurnRecords, groups by session, builds summaries, renders plain-text report
+  - `_build_session_summaries()` — groups records by session_key, sorts by turn_number, produces `SessionSummary` objects
+  - `_context_growth_pct()` — computes prompt_token growth % (first → last turn)
+  - `_is_active()` — classifies session as active/closed based on idle_timeout_minutes
+  - `_format_bar()` / `_format_tool_summary()` / `_fmt_tokens()` — formatting helpers
+  - `_format_report()` — renders all sections: title box, SUMMARY, COST BY CHANNEL, COST BY AGENT TYPE, ACTIVE SESSIONS, CLOSED SESSIONS, CONTEXT ACCUMULATION WARNINGS
+  - `_format_session_block()` — renders one session with optional sub-sessions (research, summarizer) and inline growth warnings
+  - `context_growth_warning_pct` configurable (default 500%); also shows moderate growth notes for sessions >250%
+- `tests/test_reports/__init__.py` — tests package
+- `tests/test_reports/test_usage_report.py` — 31 tests covering all spec requirements
+
+**Tests:** 31 new, 2454 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 45.5 (Email Delivery + Scheduling).
+
+---
+
 ## /build 2026-05-29 — Piece 45.3 Research Agent Token Capture ✅
 
 **Branch:** `milestone-45.3-research-agent-token-capture` | **PR:** pending
