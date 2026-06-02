@@ -19,6 +19,22 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-02 — Piece 46.3 Remove Duplicate Tool Descriptions ✅
+
+**Branch:** `milestone-46.3-remove-duplicate-tool-descriptions` | **PR:** pending
+
+Removed the prose tool block from the system prompt. The LLM already receives full JSON schema tool definitions via the `tools` API parameter every call; duplicating them as a Markdown table in the system prompt wasted ~1,500–2,000 tokens per LLM call.
+
+**Files modified:**
+- `openrattler/identity/loader.py` — removed `_build_tools_block()` call from `_generate_context_section()`; updated docstring to explain why; removed stale "tools table above" cross-reference from `_build_security_notes_block()`; method itself kept for debugging
+- `tests/test_identity/test_loader.py` — replaced 3 tool-in-prompt assertions with 6 updated tests: `test_no_tools_block_in_system_prompt` (key new assertion), `test_workspace/channels/memory/security_notes_section_present` (verify remaining sections intact), `test_no_tools_message_when_empty` (moved to `TestToolsBlock`); rewrote `TestToolsBlock` to call `_build_tools_block()` directly (proper unit testing of the method)
+
+**Tests:** 3 new (net: +3), 2537 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 46.4 (Memory update history scoping).
+
+---
+
 ## /build 2026-06-02 — Piece 46.2 Heartbeat Tool Allowlist ✅
 
 **Branch:** `milestone-46.2-heartbeat-tool-allowlist` | **PR:** pending

@@ -157,26 +157,34 @@ class TestContextSection:
         prompt = await loader.load_system_prompt()
         assert "UTC" in prompt
 
-    async def test_permitted_tools_listed(self, tmp_path: Path) -> None:
+    async def test_no_tools_block_in_system_prompt(self, tmp_path: Path) -> None:
+        # Tool definitions reach the LLM via the API tools parameter — the prose
+        # tool block is not included in the system prompt to avoid duplication.
         config = _make_config(allowed=["web_search"])
         reg = _make_registry("web_search")
         loader = _make_loader(tmp_path, config=config, registry=reg)
         prompt = await loader.load_system_prompt()
-        assert "web_search" in prompt
+        assert "### Tools Available" not in prompt
 
-    async def test_unpermitted_tools_not_listed(self, tmp_path: Path) -> None:
-        # Agent has no allowed_tools — empty list means no tools permitted.
-        config = _make_config(allowed=[])
-        reg = _make_registry("secret_tool")
-        loader = _make_loader(tmp_path, config=config, registry=reg)
+    async def test_workspace_section_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert "secret_tool" not in prompt
+        assert "### Workspace" in prompt
 
-    async def test_no_tools_message_when_empty(self, tmp_path: Path) -> None:
-        config = _make_config(allowed=[])
-        loader = _make_loader(tmp_path, config=config, registry=_make_registry())
+    async def test_channels_section_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
         prompt = await loader.load_system_prompt()
-        assert "no tools currently permitted" in prompt
+        assert "### Channels" in prompt
+
+    async def test_memory_section_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "### Memory System" in prompt
+
+    async def test_security_notes_section_present(self, tmp_path: Path) -> None:
+        loader = _make_loader(tmp_path)
+        prompt = await loader.load_system_prompt()
+        assert "### Security Notes" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -396,50 +404,51 @@ def _make_local_agent_config(allowed: list[str]) -> AgentConfig:
 
 
 class TestToolsBlock:
-    async def test_tools_grouped_by_trust_level(self, tmp_path: Path) -> None:
+    """Tests for _build_tools_block() directly — the method is kept for debugging
+    but is no longer called from _generate_context_section() (tools reach the LLM
+    via the API tools parameter instead)."""
+
+    def test_tools_grouped_by_trust_level(self, tmp_path: Path) -> None:
         config = _make_local_agent_config(["public_tool", "main_tool", "local_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        assert "public_tool" in prompt
-        assert "main_tool" in prompt
-        assert "local_tool" in prompt
+        block = loader._build_tools_block()
+        assert "public_tool" in block
+        assert "main_tool" in block
+        assert "local_tool" in block
 
-    async def test_trust_level_headings_in_prompt(self, tmp_path: Path) -> None:
+    def test_trust_level_headings_in_block(self, tmp_path: Path) -> None:
         config = _make_config(allowed=["public_tool", "main_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        assert "`public` trust required" in prompt
-        assert "`main` trust required" in prompt
+        block = loader._build_tools_block()
+        assert "`public` trust required" in block
+        assert "`main` trust required" in block
 
-    async def test_authorized_tiers_for_public(self, tmp_path: Path) -> None:
+    def test_authorized_tiers_for_public(self, tmp_path: Path) -> None:
         # public trust = all tiers authorized.
         config = _make_config(allowed=["public_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        assert "`public`" in prompt
-        assert "`main`" in prompt
-        assert "`local`" in prompt
-        assert "`security`" in prompt
+        block = loader._build_tools_block()
+        assert "`public`" in block
+        assert "`main`" in block
+        assert "`local`" in block
+        assert "`security`" in block
 
-    async def test_authorized_tiers_for_local(self, tmp_path: Path) -> None:
+    def test_authorized_tiers_for_local(self, tmp_path: Path) -> None:
         # local trust = only local + security authorized.
         config = _make_local_agent_config(["local_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        # local and security appear in the authorized list for local_tool.
-        assert "`local` trust required" in prompt
-        # public and main should NOT appear as authorized for this group.
-        # (check via the "authorized:" suffix line for local group)
-        local_section_start = prompt.index("`local` trust required")
-        local_section = prompt[local_section_start : local_section_start + 200]
+        block = loader._build_tools_block()
+        assert "`local` trust required" in block
+        local_section_start = block.index("`local` trust required")
+        local_section = block[local_section_start : local_section_start + 200]
         assert "`local`" in local_section
         assert "`security`" in local_section
 
-    async def test_authorized_tiers_for_mcp(self, tmp_path: Path) -> None:
+    def test_authorized_tiers_for_mcp(self, tmp_path: Path) -> None:
         # mcp trust = main and above are authorized (not empty!).
         # Regression for bug where _TRUST_ORDER[mcp]=4 caused _authorized_tiers
         # to return [] for mcp-level tools, making them appear "not enabled".
@@ -454,29 +463,34 @@ class TestToolsBlock:
         )
         config = _make_config(allowed=["mcp_tool"])
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        mcp_section_start = prompt.index("`mcp` trust required")
-        mcp_section = prompt[mcp_section_start : mcp_section_start + 200]
-        # main, local, and security are all authorized to call mcp-level tools.
+        block = loader._build_tools_block()
+        mcp_section_start = block.index("`mcp` trust required")
+        mcp_section = block[mcp_section_start : mcp_section_start + 200]
         assert "`main`" in mcp_section
         assert "`local`" in mcp_section
         assert "`security`" in mcp_section
-        # public is not authorized.
         assert "`public`" not in mcp_section
 
-    async def test_approval_flag_shown(self, tmp_path: Path) -> None:
-        config = _make_config(allowed=["local_tool"])
+    def test_approval_flag_shown(self, tmp_path: Path) -> None:
+        # local_tool requires TrustLevel.local — use a local-trust agent config.
+        config = _make_local_agent_config(["local_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        assert "Yes" in prompt  # requires_approval=True tool.
+        block = loader._build_tools_block()
+        assert "Yes" in block  # requires_approval=True tool.
 
-    async def test_no_approval_flag_for_normal_tool(self, tmp_path: Path) -> None:
+    def test_no_approval_flag_for_normal_tool(self, tmp_path: Path) -> None:
         config = _make_config(allowed=["main_tool"])
         reg = _make_registry_multi()
         loader = _make_loader(tmp_path, config=config, registry=reg)
-        prompt = await loader.load_system_prompt()
-        assert "No" in prompt  # requires_approval=False (default).
+        block = loader._build_tools_block()
+        assert "No" in block  # requires_approval=False (default).
+
+    def test_no_tools_message_when_empty(self, tmp_path: Path) -> None:
+        config = _make_config(allowed=[])
+        loader = _make_loader(tmp_path, config=config, registry=_make_registry())
+        block = loader._build_tools_block()
+        assert "no tools currently permitted" in block
 
 
 # ---------------------------------------------------------------------------

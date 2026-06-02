@@ -310,20 +310,22 @@ class IdentityLoader:
         Produces four sub-sections:
         - Workspace metadata (path, agent ID, security profile, init date, datetime)
         - Channels (from AppConfig if available)
-        - Tools available to this agent, grouped by trust level required
         - Memory system description
         - Security profile notes
 
+        Note: tool definitions are not included here — the LLM receives full
+        JSON schema tool definitions via the ``tools`` parameter in every API
+        call, so a prose tool block in the system prompt would be redundant.
+
         Security notes:
-        - Only tools permitted for this agent are listed; agents with lower
-          trust levels will not see tools outside their permission boundary.
         - The channel list is informational — it does not grant tool permissions.
         """
         parts: list[str] = ["## Context"]
 
         parts.append(self._build_workspace_block())
         parts.append(self._build_channels_block())
-        parts.append(self._build_tools_block())
+        # _build_tools_block() is intentionally not called here — tool definitions
+        # reach the LLM via the API tools parameter, not the system prompt.
         parts.append(self._build_memory_block())
         parts.append(self._build_security_notes_block())
 
@@ -447,9 +449,6 @@ class IdentityLoader:
             "This profile configures which approval gates are in effect, which tools "
             "require confirmation, and how heartbeat turns are restricted. "
             "When uncertain whether an action requires approval, treat it as if it does.",
-            "",
-            "Tools marked **Yes ⚠️** in the tools table above will pause for explicit "
-            "user confirmation before executing.",
         ]
         return "\n".join(lines)
 
