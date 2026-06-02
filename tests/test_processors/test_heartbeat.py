@@ -321,3 +321,104 @@ class TestEchoChamberRegression:
         proc = _make_processor(response_content="something", tmp_path=tmp_path)
         await proc.run_cycle()
         proc._heartbeat_log.prune.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatProcessor — lifecycle events (46.1)
+# ---------------------------------------------------------------------------
+
+
+def _make_lifecycle_store() -> MagicMock:
+    """Return a mock SessionLifecycleStore."""
+    store = MagicMock()
+    store.emit_open = AsyncMock()
+    store.emit_close = AsyncMock()
+    return store
+
+
+class TestHeartbeatLifecycleEvents:
+    async def test_open_event_emitted_at_cycle_start(self, tmp_path: Path) -> None:
+        lc_store = _make_lifecycle_store()
+        proc = _make_processor(response_content="ok", tmp_path=tmp_path)
+        proc._lifecycle_store = lc_store
+        await proc.run_cycle()
+        lc_store.emit_open.assert_awaited_once()
+        call_args = lc_store.emit_open.await_args
+        session_key = call_args[0][0]
+        assert session_key.startswith("agent:main:heartbeat:")
+        assert call_args[0][1] == "heartbeat"
+
+    async def test_close_event_emitted_on_success(self, tmp_path: Path) -> None:
+        lc_store = _make_lifecycle_store()
+        proc = _make_processor(response_content="ok", tmp_path=tmp_path)
+        proc._lifecycle_store = lc_store
+        await proc.run_cycle()
+        lc_store.emit_close.assert_awaited_once()
+        call_args = lc_store.emit_close.await_args
+        close_reason = call_args[0][1]
+        assert close_reason == "completed"
+
+    async def test_close_event_emitted_on_error_with_error_reason(self, tmp_path: Path) -> None:
+        lc_store = _make_lifecycle_store()
+        proc = _make_processor(tmp_path=tmp_path)
+        proc._lifecycle_store = lc_store
+        proc._runtime.process_message = AsyncMock(side_effect=RuntimeError("boom"))
+        await proc.run_cycle()
+        lc_store.emit_close.assert_awaited_once()
+        call_args = lc_store.emit_close.await_args
+        close_reason = call_args[0][1]
+        assert close_reason == "error"
+
+    async def test_lifecycle_store_failure_does_not_break_cycle(self, tmp_path: Path) -> None:
+        lc_store = _make_lifecycle_store()
+        lc_store.emit_open = AsyncMock(side_effect=Exception("store unavailable"))
+        proc = _make_processor(response_content="ok", tmp_path=tmp_path)
+        proc._lifecycle_store = lc_store
+        # Should not raise
+        count = await proc.run_cycle()
+        assert count == 1
+
+    async def test_no_lifecycle_events_when_store_is_none(self, tmp_path: Path) -> None:
+        proc = _make_processor(response_content="ok", tmp_path=tmp_path)
+        assert proc._lifecycle_store is None
+        # Should not raise
+        count = await proc.run_cycle()
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# ProcessorScheduler — first-tick fix (46.1)
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulerFirstTick:
+    def test_register_processor_sets_last_run_to_now_not_none(self) -> None:
+        from datetime import datetime, timezone
+
+        from openrattler.gateway.scheduler import ProcessorScheduler
+
+        processor = MagicMock()
+        processor.processor_name = "test_proc"
+        scheduler = ProcessorScheduler()
+        scheduler.register_processor(processor, interval_minutes=30)
+        last_run = scheduler._last_run.get("test_proc")
+        # Must be a real datetime, not None.
+        assert last_run is not None
+        assert isinstance(last_run, datetime)
+
+    def test_processor_does_not_fire_immediately_after_registration(self) -> None:
+        """Elapsed time at first tick should be ~0, well below any reasonable interval."""
+        from datetime import datetime, timezone
+
+        from openrattler.gateway.scheduler import ProcessorScheduler
+
+        processor = MagicMock()
+        processor.processor_name = "test_proc"
+        scheduler = ProcessorScheduler()
+        scheduler.register_processor(processor, interval_minutes=30)
+        # Simulate a scheduler tick right after registration.
+        now = datetime.now(timezone.utc)
+        last = scheduler._last_run["test_proc"]
+        elapsed = (now - last).total_seconds()  # type: ignore[operator]
+        # Elapsed should be tiny (milliseconds) — far less than 30 minutes.
+        assert elapsed < 60  # generous 60-second window for slow test runners

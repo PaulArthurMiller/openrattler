@@ -599,3 +599,81 @@ class TestUsageRecording:
         um = await agent.run(request=_make_request(), trace_id="trace-broken-store")
         print(f"[TestUsageRecording] store_failure: UM type={um.type}")
         assert um.type in ("response", "error")
+
+
+# ---------------------------------------------------------------------------
+# ResearchAgent — lifecycle events (46.1)
+# ---------------------------------------------------------------------------
+
+
+class TestResearchAgentLifecycleEvents:
+    """Lifecycle open/close events are emitted via SessionLifecycleStore."""
+
+    def _make_lifecycle_store(self) -> MagicMock:
+        lc = MagicMock()
+        lc.emit_open = AsyncMock()
+        lc.emit_close = AsyncMock()
+        return lc
+
+    async def test_open_event_emitted_before_pipeline(self, tmp_path: Path) -> None:
+        lc = self._make_lifecycle_store()
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        agent = ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=_make_mock_provider([_make_llm_response("news"), _make_llm_response("done")]),
+            lifecycle_store=lc,
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        await agent.run(request=_make_request(), trace_id="lc-open-test-trace")
+        lc.emit_open.assert_awaited_once()
+        open_args = lc.emit_open.await_args
+        assert open_args[0][1] == "subagent_research"
+
+    async def test_close_event_emitted_after_pipeline(self, tmp_path: Path) -> None:
+        lc = self._make_lifecycle_store()
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        agent = ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=_make_mock_provider([_make_llm_response("news"), _make_llm_response("done")]),
+            lifecycle_store=lc,
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        await agent.run(request=_make_request(), trace_id="lc-close-test-trace")
+        lc.emit_close.assert_awaited_once()
+        close_args = lc.emit_close.await_args
+        assert close_args[0][1] == "completed"
+
+    async def test_parent_session_key_passed_to_open_event(self, tmp_path: Path) -> None:
+        lc = self._make_lifecycle_store()
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        agent = ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=_make_mock_provider([_make_llm_response("news"), _make_llm_response("done")]),
+            lifecycle_store=lc,
+            parent_session_key="agent:main:heartbeat:hb_x",
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        await agent.run(request=_make_request(), trace_id="lc-parent-trace")
+        open_kwargs = lc.emit_open.await_args[1]
+        assert open_kwargs.get("parent_session_key") == "agent:main:heartbeat:hb_x"
+
+    async def test_lifecycle_store_failure_does_not_break_result(self, tmp_path: Path) -> None:
+        lc = self._make_lifecycle_store()
+        lc.emit_open = AsyncMock(side_effect=Exception("store down"))
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        config = _make_config(tmp_path)
+        agent = ResearchAgent(
+            config=config,
+            audit=audit,
+            provider=_make_mock_provider([_make_llm_response("news"), _make_llm_response("done")]),
+            lifecycle_store=lc,
+        )
+        agent._web_search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        um = await agent.run(request=_make_request(), trace_id="lc-fail-trace")
+        assert um.type in ("response", "error")

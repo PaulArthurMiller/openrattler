@@ -98,7 +98,9 @@ class ProcessorScheduler:
         """
         interval_minutes = max(1, interval_minutes)
         self._processors.append((processor, interval_minutes))
-        self._last_run[processor.processor_name] = None
+        # Initialise to now so the first tick waits a full interval rather than
+        # firing immediately (elapsed = inf when last_run is None).
+        self._last_run[processor.processor_name] = datetime.now(timezone.utc)
         logger.info(
             "ProcessorScheduler: registered '%s' (interval=%d min)",
             processor.processor_name,

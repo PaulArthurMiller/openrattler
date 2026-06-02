@@ -443,21 +443,6 @@ class ApplicationContext:
             await asyncio.gather(*self._channel_tasks, return_exceptions=True)
         self._channel_tasks.clear()
 
-        # Send shutdown usage report before stopping components so SMTP is still available.
-        if self._report_delivery is not None and self._config.usage_report.send_on_shutdown:
-            try:
-                await asyncio.wait_for(
-                    self._report_delivery.send_report(),
-                    timeout=10.0,
-                )
-                logger.info("ApplicationContext: usage report sent on shutdown")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "ApplicationContext: usage report send timed out — continuing shutdown"
-                )
-            except Exception as exc:
-                logger.warning("ApplicationContext: failed to send shutdown report: %s", exc)
-
         if self._scheduler is not None:
             try:
                 await asyncio.wait_for(self._scheduler.stop(), timeout=_COMPONENT_STOP_TIMEOUT)
@@ -501,8 +486,10 @@ class ApplicationContext:
         2. Start a hard-exit watchdog — if shutdown takes longer than
            ``_HARD_EXIT_TIMEOUT`` seconds, ``os._exit(0)`` is called so the
            port is always released and the process never hangs.
-        3. Ask Corvus to update memory (``_MEMORY_PROMPT_TIMEOUT`` seconds).
-        4. Stop all components with per-component timeouts (``_COMPONENT_STOP_TIMEOUT``).
+        3. Send the usage report (captures only production session data, before
+           the memory-update TurnRecord is written).
+        4. Ask Corvus to update memory (``_MEMORY_PROMPT_TIMEOUT`` seconds).
+        5. Stop all components with per-component timeouts (``_COMPONENT_STOP_TIMEOUT``).
         """
         await self.start()
         loop = asyncio.get_running_loop()
@@ -526,6 +513,23 @@ class ApplicationContext:
         # Watchdog: guarantee the process exits even if a component hangs.
         watchdog = asyncio.create_task(self._force_exit_after(_HARD_EXIT_TIMEOUT))
         try:
+            # Step 3: Send usage report BEFORE the memory-update prompt so the
+            # memory-update TurnRecord is not included in the report window.
+            if self._report_delivery is not None and self._config.usage_report.send_on_shutdown:
+                try:
+                    await asyncio.wait_for(
+                        self._report_delivery.send_report(),
+                        timeout=10.0,
+                    )
+                    logger.info("ApplicationContext: usage report sent on shutdown")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "ApplicationContext: usage report send timed out — continuing shutdown"
+                    )
+                except Exception as exc:
+                    logger.warning("ApplicationContext: failed to send shutdown report: %s", exc)
+
+            # Step 4: Ask Corvus to update memory.
             try:
                 await self._prompt_memory_update_on_shutdown()
             except BaseException:
@@ -719,10 +723,14 @@ async def build_application(
     # 3. AuditLog.
     audit = AuditLog(workspace_dir / "audit" / "audit.jsonl")
 
-    # 3b. UsageStore — append-only JSONL log for per-turn token economy data.
+    # 3b. UsageStore + SessionLifecycleStore — append-only JSONL logs for token economy.
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
     from openrattler.storage.usage import UsageStore
 
     usage_store = UsageStore(workspace_dir / "usage" / "usage_log.jsonl")
+    session_lifecycle_store = SessionLifecycleStore(
+        workspace_dir / "usage" / "session_lifecycle.jsonl"
+    )
 
     # 4. TranscriptStore + MemoryStore.
     transcript_store = TranscriptStore(workspace_dir / "sessions")
@@ -960,10 +968,12 @@ async def build_application(
     ResearchTools(creator=creator, audit=audit).register_all(registry)
 
     from openrattler.tools.builtin.research_tools import (
+        configure_lifecycle_store as configure_research_lifecycle_store,
         configure_usage_store as configure_research_usage_store,
     )
 
     configure_research_usage_store(usage_store)
+    configure_research_lifecycle_store(session_lifecycle_store)
 
     # 11e. SummarizerAgent — wire into session tools so session_read_self and
     #      session_lookup can summarize transcripts on demand.
@@ -1047,6 +1057,7 @@ async def build_application(
                 identity_loader=identity_loader,
                 session_key=HEARTBEAT_SESSION_KEY,
                 audit=audit,
+                lifecycle_store=session_lifecycle_store,
             )
             scheduler.register_processor(heartbeat_processor, heartbeat_cfg.interval_minutes)
 
@@ -1069,6 +1080,8 @@ async def build_application(
             report_generator = UsageReportGenerator(
                 usage_store=usage_store,
                 idle_timeout_minutes=config.usage_report.idle_session_timeout_minutes,
+                lifecycle_store=session_lifecycle_store,
+                staleness_window_minutes=config.usage_report.staleness_window_minutes,
             )
             report_delivery = UsageReportDelivery(
                 generator=report_generator,

@@ -19,6 +19,132 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-02 — Piece 46.1 Session Lifecycle Instrumentation ✅
+
+**Branch:** `milestone-46.1-session-lifecycle-instrumentation` | **PR:** pending
+
+Built the full session lifecycle instrumentation layer — model, store, emitters, report updates, scheduler fix, and shutdown sequence fix.
+
+**Files created:**
+- `openrattler/models/session_lifecycle.py` — `SessionLifecycleEvent` Pydantic model + `infer_session_type()` helper
+- `openrattler/storage/session_lifecycle.py` — `SessionLifecycleStore`: append-only JSONL store with `emit_open()`, `emit_close()`, `get_open_event()`, `get_close_event()`
+- `tests/test_models/test_session_lifecycle.py` — 14 tests
+- `tests/test_storage/test_session_lifecycle.py` — 14 tests
+
+**Files modified:**
+- `openrattler/processors/heartbeat.py` — `lifecycle_store` param added to `__init__`; `run_cycle()` emits open event at start, close event in finally (completed/error reason)
+- `openrattler/agents/research/agent.py` — `lifecycle_store` + `_pipeline_error` tracking; open event before pipeline, close event after (with parent_session_key)
+- `openrattler/agents/creator.py` — `lifecycle_store` param forwarded to `create_research_agent()`
+- `openrattler/tools/builtin/research_tools.py` — `configure_lifecycle_store()` module-level wiring; passed to `create_research_agent()`
+- `openrattler/cli/chat.py` — `_lifecycle_store` created in `open()`; open event after `await self.open()`, close event in `start()` finally
+- `openrattler/reports/usage_report.py` — `SessionSummary.is_active: bool` → `session_status: Literal["closed","active","stale_unclosed"]` + `session_type: str`; `_get_session_status()` async tri-state; STALE/UNCLOSED section; SESSIONS BY TYPE subtotals; `lifecycle_store` + `staleness_window_minutes` params
+- `openrattler/config/loader.py` — `staleness_window_minutes: int = 30` added to `UsageReportConfig`
+- `openrattler/gateway/scheduler.py` — `register_processor()` init `_last_run[name] = now` instead of `None` (first-tick fix)
+- `openrattler/startup.py` — `SessionLifecycleStore` created at step 3b; wired into heartbeat processor, research tools, and report generator; report send moved OUT of `stop()` INTO `run_until_interrupted()` BEFORE memory prompt
+- `tests/test_processors/test_heartbeat.py` — 9 new tests: `TestHeartbeatLifecycleEvents` (5) + `TestSchedulerFirstTick` (2 sync + 2 prior)
+- `tests/test_agents/test_research/test_agent.py` — 4 new `TestResearchAgentLifecycleEvents` tests
+- `tests/test_reports/test_usage_report.py` — 10 new `TestTriStateSessionStatus` tests; 5 existing tests updated for `session_status` rename
+
+**Tests:** 43 new, 2522 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 46.2 (Heartbeat tool allowlist).
+
+---
+
+## /planner 2026-05-29 — Token Economy Optimization (46.1–46.5) ✅
+
+**Plan written:** BUILD-PLAN.md (46.1–46.5 section added)
+
+**Goal:** Reduce heartbeat cycle cost from ~$0.25/cycle to $0.05–0.08/cycle through structural fixes, not workload reduction.
+
+**46.1 supersedes 45.6–45.9** — same lifecycle instrumentation scope, plus two additional fixes: scheduler first-tick bug and shutdown sequence ordering.
+
+**Five pieces planned:**
+
+- **46.1** — Session lifecycle instrumentation + reporting fixes (prerequisite for all others)
+  - `SessionLifecycleEvent` model + `SessionLifecycleStore` (append-only JSONL)
+  - Heartbeat, research, CLI open/close event emission with parent_session_key
+  - Report tri-state status: closed/active/stale_unclosed; subtotals by session_type
+  - Scheduler `_last_run` init fix (None → now)
+  - Shutdown sequence: send_report before `_prompt_memory_update_on_shutdown()`
+
+- **46.2** — Heartbeat tool allowlist
+  - `HeartbeatConfig.tool_allowlist: list[str]` (default [])
+  - `AgentRuntime.process_message(tool_allowlist=...)` optional param
+  - `_build_tool_defs(allowed=...)` creates filtered config copy
+  - Default allowlist: research_query, memory_read/write, send_email, send_slack_message, send_sms, mcp:weather-mcp.get_forecast
+  - Estimated saving: ~19,000–20,000 tokens/cycle
+
+- **46.3** — Remove duplicate tool descriptions from context block
+  - Remove `_build_tools_block()` call from `IdentityLoader._generate_context_section()`
+  - Estimated saving: ~1,500–2,000 tokens/system-prompt
+  - Quick win, low risk
+
+- **46.4** — Memory update history scoping
+  - `MemoryStore.save()` writes `memory_last_updated` timestamp to memory.json
+  - `TranscriptStore.load_since(session_key, since)` for range-scoped loading
+  - `_prompt_memory_update_on_shutdown()` uses scoped history (since last memory update)
+  - Estimated saving: ~19,511 → ~2,000–4,000 tokens for memory-update prompt
+
+- **46.5** (lower priority) — MEMORY.md periodic consolidation
+  - New `consolidate_memory_history(days_to_keep=7)` tool
+  - Routes through `update_memory_narrative` → MemorySecurityAgent review
+
+**Next step:** `/build` to start Piece 46.1 (session lifecycle model + store foundation).
+
+---
+
+## /planner 2026-05-29 — Session Lifecycle Instrumentation (45.6–45.9) ✅
+
+**Plan written:** BUILD-PLAN.md (45.6–45.9 section added)
+
+Root cause confirmed: `UsageReportGenerator._is_active()` uses only `last_turn_at` vs idle
+timeout. Every fresh heartbeat cycle writes a TurnRecord with `recorded_at = now`, so every
+heartbeat session perpetually passes the active check. No close signal exists anywhere.
+
+**Architecture:** Parallel `session_lifecycle.jsonl` alongside `usage_log.jsonl`. Both open
+and close events emitted; only close events are strictly required for the fix, but open events
+give precise duration tracking. Report joins both stores on `session_key` for tri-state status:
+closed / active / stale_unclosed.
+
+**Four build pieces:**
+
+- **45.6** — `SessionLifecycleEvent` model + `SessionLifecycleStore` (foundation)
+  - `openrattler/models/session_lifecycle.py`: model + `infer_session_type()` helper
+  - `openrattler/storage/session_lifecycle.py`: append-only JSONL store
+  - ~25 tests
+
+- **45.7** — Heartbeat + Research close emission (core fix)
+  - `heartbeat.py`: inject `SessionLifecycleStore`; open event at cycle start,
+    close event in `finally` block (success = "completed", exception = "error")
+  - `research/agent.py`: same open/close pattern with `session_type="subagent_research"`
+    and `parent_session_key` propagated
+  - `creator.py` + `research_tools.py`: `lifecycle_store` param wired through
+  - `startup.py`: create `SessionLifecycleStore`, wire into heartbeat + research tools
+  - ~20 tests
+
+- **45.8** — CLI session close emission
+  - `cli/chat.py`: open event before readline loop, close event in finally
+  - `session_type="interactive"`, `close_reason="disconnect"`
+  - ~8 tests
+
+- **45.9** — Report updates
+  - `loader.py`: add `staleness_window_minutes: int = 30` to `UsageReportConfig`
+  - `usage_report.py`: tri-state `session_status` replaces `is_active: bool`;
+    `session_type` field from `infer_session_type()`; new STALE/UNCLOSED section;
+    subtotals by session_type in all sections
+  - `startup.py`: pass `lifecycle_store` + `staleness_window_minutes` to generator
+  - ~20 tests; existing `test_usage_report.py` tests updated for `session_status` rename
+
+**Key design decision:** No change to AgentRuntime or its constructor. Close events emitted
+at call sites (heartbeat.py, research/agent.py, cli/chat.py) where session_type is known,
+not inside the runtime itself. Lifecycle recording failures are caught and logged — never
+allowed to break the main cycle.
+
+**Next step:** `/build` to start Piece 45.6 (model + store foundation).
+
+---
+
 ## /build 2026-05-29 — Piece 45.5 Email Delivery + Scheduling ✅
 
 **Branch:** `milestone-45.5-email-delivery-scheduling` | **PR:** pending

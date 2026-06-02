@@ -57,6 +57,7 @@ from openrattler.models.sessions import Session
 from openrattler.security.memory_security import MemorySecurityAgent
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
+from openrattler.storage.session_lifecycle import SessionLifecycleStore
 from openrattler.storage.transcripts import TranscriptStore
 from openrattler.tools.builtin.memory_tools import NarrativeMemoryTools
 from openrattler.tools.builtin.research_tools import ResearchTools
@@ -189,6 +190,7 @@ class CLIChat:
         self._audit_log: Optional[AuditLog] = None
         self._mcp_manager: Optional[MCPManager] = None
         self._adapter: CLIAdapter = CLIAdapter()
+        self._lifecycle_store: Optional[SessionLifecycleStore] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -371,10 +373,11 @@ class CLIChat:
                 "Calendar, Drive, Gmail, and Tasks tools registered."
             )
 
-        # --- UsageStore ----------------------------------------------------
+        # --- UsageStore + SessionLifecycleStore ----------------------------
         from openrattler.storage.usage import UsageStore
 
         usage_store = UsageStore(usage_dir / "usage_log.jsonl")
+        self._lifecycle_store = SessionLifecycleStore(usage_dir / "session_lifecycle.jsonl")
 
         # --- Runtime -------------------------------------------------------
         executor = ToolExecutor(registry, audit_log, mcp_bridge=mcp_bridge)
@@ -457,6 +460,13 @@ class CLIChat:
         await self._adapter.connect()
         print("OpenRattler CLI — type /help for commands, /quit to exit.\n")
 
+        # Emit lifecycle open event for the interactive CLI session.
+        if self._lifecycle_store is not None:
+            try:
+                await self._lifecycle_store.emit_open(CLI_SESSION_KEY, "interactive")
+            except Exception as lc_exc:
+                logger.warning("CLIChat: lifecycle open event failed: %s", lc_exc)
+
         try:
             while True:
                 try:
@@ -477,6 +487,12 @@ class CLIChat:
                 response = await self._runtime.process_message(self._session, msg)
                 await self._adapter.send(response)
         finally:
+            # Emit lifecycle close event before disconnecting.
+            if self._lifecycle_store is not None:
+                try:
+                    await self._lifecycle_store.emit_close(CLI_SESSION_KEY, "disconnect")
+                except Exception as lc_exc:
+                    logger.warning("CLIChat: lifecycle close event failed: %s", lc_exc)
             await self._adapter.disconnect()
             await self.close()
 

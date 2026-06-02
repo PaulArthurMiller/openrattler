@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
     from openrattler.storage.usage import UsageStore
     from openrattler.tools.search.web_search_tool import WebSearchParams
 
@@ -120,6 +121,7 @@ class ResearchAgent:
         provider: Optional[LLMProvider] = None,
         usage_store: Optional["UsageStore"] = None,
         parent_session_key: Optional[str] = None,
+        lifecycle_store: Optional["SessionLifecycleStore"] = None,
     ) -> None:
         skill_path = config.skill_prompt_path
         if not skill_path.exists():
@@ -143,6 +145,7 @@ class ResearchAgent:
         self._provider = provider
         self._usage_store = usage_store
         self._parent_session_key = parent_session_key
+        self._lifecycle_store = lifecycle_store
         # Per-turn token accumulators — reset at the start of each run() call.
         self._turn_prompt_tokens: int = 0
         self._turn_completion_tokens: int = 0
@@ -210,11 +213,24 @@ class ResearchAgent:
         self._turn_llm_calls = 0
         research_session_key = f"agent:research:{(trace_id or 'no-trace')[:12]}"
 
+        # Emit lifecycle open event.
+        if self._lifecycle_store is not None:
+            try:
+                await self._lifecycle_store.emit_open(
+                    research_session_key,
+                    "subagent_research",
+                    parent_session_key=self._parent_session_key,
+                )
+            except Exception as lc_exc:
+                logger.warning("ResearchAgent: lifecycle open event failed: %s", lc_exc)
+
+        _pipeline_error: Optional[Exception] = None
         try:
             result_um = await self._run_pipeline(
                 request, trace_id, from_agent, to_agent, session_key
             )
         except Exception as exc:
+            _pipeline_error = exc
             logger.exception("ResearchAgent pipeline error: %s", exc)
             error = ResearchError(
                 error_code="SANITIZATION_FAILED",
@@ -246,6 +262,19 @@ class ResearchAgent:
                 )
             except Exception as usage_exc:
                 logger.warning("ResearchAgent: failed to record usage: %s", usage_exc)
+
+        # Emit lifecycle close event.
+        if self._lifecycle_store is not None:
+            close_reason = "error" if _pipeline_error is not None else "completed"
+            try:
+                await self._lifecycle_store.emit_close(
+                    research_session_key,
+                    close_reason,
+                    total_prompt_tokens=self._turn_prompt_tokens or None,
+                    total_completion_tokens=self._turn_completion_tokens or None,
+                )
+            except Exception as lc_exc:
+                logger.warning("ResearchAgent: lifecycle close event failed: %s", lc_exc)
 
         return result_um
 

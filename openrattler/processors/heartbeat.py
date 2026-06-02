@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from openrattler.config.loader import AppConfig
     from openrattler.identity.loader import IdentityLoader
     from openrattler.storage.audit import AuditLog
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,7 @@ class HeartbeatProcessor(ProactiveProcessor):
         config: Optional["AppConfig"] = None,
         session_key: str = HEARTBEAT_SESSION_KEY,
         audit: Optional["AuditLog"] = None,
+        lifecycle_store: Optional["SessionLifecycleStore"] = None,
     ) -> None:
         self._runtime = runtime
         self._identity_loader = identity_loader
@@ -217,6 +219,7 @@ class HeartbeatProcessor(ProactiveProcessor):
         self._session_key = session_key
         self._audit = audit
         self._pending: list[HeartbeatOutput] = []
+        self._lifecycle_store = lifecycle_store
 
     # ------------------------------------------------------------------
     # ProactiveProcessor lifecycle
@@ -255,6 +258,19 @@ class HeartbeatProcessor(ProactiveProcessor):
         log_context_entries = (
             self._config.heartbeat.log_context_entries if self._config is not None else 7
         )
+
+        # Emit lifecycle open event.
+        if self._lifecycle_store is not None:
+            try:
+                await self._lifecycle_store.emit_open(session_key, "heartbeat")
+            except Exception as lc_exc:
+                logger.warning("HeartbeatProcessor: lifecycle open event failed: %s", lc_exc)
+
+        # Track exception state so the finally block can record the right close_reason.
+        _cycle_error: Optional[Exception] = None
+        # Token totals for the close event — populated after process_message returns.
+        _prompt_tokens: int = 0
+        _completion_tokens: int = 0
 
         try:
             # 2. Load recent log entries for context injection.
@@ -327,6 +343,20 @@ class HeartbeatProcessor(ProactiveProcessor):
             response = await self._runtime.process_message(session, trigger)
             content: str = response.params.get("content", "") or ""
 
+            # Capture token totals from the usage store for the lifecycle close event.
+            # load_since with a 5-minute window covers this cycle's TurnRecord(s).
+            try:
+                if self._runtime._usage_store is not None:
+                    from datetime import timedelta
+
+                    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+                    recent = await self._runtime._usage_store.load_since(cutoff)
+                    session_records = [r for r in recent if r.session_key == session_key]
+                    _prompt_tokens = sum(r.prompt_tokens for r in session_records)
+                    _completion_tokens = sum(r.completion_tokens for r in session_records)
+            except Exception as tok_exc:
+                logger.debug("HeartbeatProcessor: could not read token totals: %s", tok_exc)
+
             # 7. Determine cycle outcome.
             output: Optional[HeartbeatOutput] = None
             if content.strip():
@@ -373,8 +403,23 @@ class HeartbeatProcessor(ProactiveProcessor):
             return 1 if delivered_to_user else 0
 
         except Exception as exc:
+            _cycle_error = exc
             logger.warning("HeartbeatProcessor: cycle error: %s", exc)
             return 0
+
+        finally:
+            # Emit lifecycle close event regardless of success or error.
+            if self._lifecycle_store is not None:
+                close_reason = "error" if _cycle_error is not None else "completed"
+                try:
+                    await self._lifecycle_store.emit_close(
+                        session_key,
+                        close_reason,
+                        total_prompt_tokens=_prompt_tokens or None,
+                        total_completion_tokens=_completion_tokens or None,
+                    )
+                except Exception as lc_exc:
+                    logger.warning("HeartbeatProcessor: lifecycle close event failed: %s", lc_exc)
 
     # ------------------------------------------------------------------
     # Output access
