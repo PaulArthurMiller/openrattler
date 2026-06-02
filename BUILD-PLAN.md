@@ -3827,10 +3827,10 @@ Caching the full 47-tool registry before 46.2 would waste cache capacity on defi
 
 ## Status
 
-Current milestone: **46.3** — Remove duplicate tool descriptions from context block
+Current milestone: **46.4** — Memory update history scoping
 Piece 46.1: ✅ complete — PR merged
 Piece 46.2: ✅ complete — PR open
-Piece 46.3: 🔲 not started — Remove duplicate tool descriptions from context block
+Piece 46.3: ✅ complete — PR open
 Piece 46.4: 🔲 not started — Memory update history scoping
 Piece 46.5: 🔲 not started — MEMORY.md periodic consolidation (lower priority)
 Last updated: 2026-06-02
