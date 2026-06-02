@@ -369,6 +369,31 @@ class TestHeartbeatConfig:
         loaded = load_config(path)
         assert loaded.heartbeat.tool_allowlist == []
 
+    # -- consolidation_days_to_keep (46.5) --
+
+    def test_consolidation_days_to_keep_default_is_7(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.consolidation_days_to_keep == 7
+        print(f"[test] default consolidation_days_to_keep={cfg.consolidation_days_to_keep}")
+
+    def test_consolidation_days_to_keep_accepts_custom_value(self) -> None:
+        cfg = HeartbeatConfig(consolidation_days_to_keep=14)
+        assert cfg.consolidation_days_to_keep == 14
+
+    def test_consolidation_days_to_keep_rejects_zero(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(consolidation_days_to_keep=0)
+
+    def test_consolidation_days_to_keep_round_trips_through_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "cfg.json"
+        original = AppConfig(heartbeat=HeartbeatConfig(consolidation_days_to_keep=30))
+        save_config(original, path)
+        loaded = load_config(path)
+        assert loaded.heartbeat.consolidation_days_to_keep == 30
+        print(
+            f"[test] round-trip consolidation_days_to_keep={loaded.heartbeat.consolidation_days_to_keep}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # UsageReportConfig

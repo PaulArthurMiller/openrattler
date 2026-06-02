@@ -74,7 +74,10 @@ import asyncio
 import difflib
 import json
 import logging
+import re
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -95,6 +98,54 @@ _TOOLS_SESSION_KEY = "agent:main:main"
 
 #: Threshold (fraction of max) at which a pruning suggestion is added to the response.
 _PRUNE_WARNING_THRESHOLD = 0.80
+
+#: Regex that matches the start of a ``## `` heading (not ``###`` or deeper).
+_SECTION_HEADING_RE: re.Pattern[str] = re.compile(r"(?m)^(?=## )")
+
+#: Regex that extracts a YYYY-MM-DD date from a section heading.
+_DATE_IN_HEADING_RE: re.Pattern[str] = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+# ---------------------------------------------------------------------------
+# Section parsing helpers for consolidate_memory_history
+# ---------------------------------------------------------------------------
+
+
+def _extract_section_date(section: str) -> Optional[datetime]:
+    """Extract a UTC date from the first line of a MEMORY.md section.
+
+    Looks for a ``YYYY-MM-DD`` pattern anywhere in the first line.
+    Returns ``None`` when no recognizable date is found.
+    """
+    first_line = section.split("\n")[0]
+    match = _DATE_IN_HEADING_RE.search(first_line)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
+def _split_sections(
+    content: str,
+) -> tuple[str, list[tuple[Optional[datetime], str]]]:
+    """Split MEMORY.md into a preamble and a list of (date, section_text) pairs.
+
+    Splits only on ``## `` headings (not ``###`` or deeper). The preamble is
+    any content before the first ``## `` heading.
+    """
+    raw_parts = _SECTION_HEADING_RE.split(content)
+    preamble = ""
+    sections: list[tuple[Optional[datetime], str]] = []
+    for part in raw_parts:
+        if not part.strip():
+            continue
+        if not part.startswith("## "):
+            preamble = part
+        else:
+            sections.append((_extract_section_date(part), part))
+    return preamble, sections
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +456,41 @@ class NarrativeMemoryTools:
                 ),
                 self._memory_write,
             )
+        registry.register(
+            ToolDefinition(
+                name="consolidate_memory_history",
+                description=(
+                    "Compress MEMORY.md entries older than `days_to_keep` days into weekly "
+                    "summaries. Each week is reduced to a single heading with an entry count "
+                    "and date range. Recent entries (within `days_to_keep` days) are kept "
+                    "verbatim. The result is written via update_memory_narrative (replace mode) "
+                    "so it goes through MemorySecurityAgent review. "
+                    "Use when MEMORY.md has grown large (> 200 lines)."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "days_to_keep": {
+                            "type": "integer",
+                            "description": (
+                                "Entries newer than this many days are kept verbatim. "
+                                "Entries older than this are compressed into weekly summaries. "
+                                "Default: 7. Minimum: 1."
+                            ),
+                        },
+                    },
+                    "required": [],
+                },
+                trust_level_required=TrustLevel.main,
+                requires_approval=False,
+                action_level=3,
+                security_notes=(
+                    "Consolidation routes through update_memory_narrative (replace mode), "
+                    "which invokes MemorySecurityAgent review before touching disk."
+                ),
+            ),
+            self._consolidate_memory_history,
+        )
 
     # ------------------------------------------------------------------
     # Tool handlers
@@ -725,6 +811,93 @@ class NarrativeMemoryTools:
 
         keys_written = [k for k in changes if k != "history"]
         return f"Written. Updated keys: {', '.join(keys_written) or '(none)'}."
+
+    async def _consolidate_memory_history(self, days_to_keep: int = 7) -> str:
+        """Handler for consolidate_memory_history.
+
+        Reads MEMORY.md, groups entries older than ``days_to_keep`` days by ISO
+        week, compresses each week into a single summary line, then routes the
+        consolidated content through ``_update_memory_narrative`` (replace mode)
+        so MemorySecurityAgent reviews it before any write touches disk.
+
+        Args:
+            days_to_keep: Entries newer than this many days are kept verbatim.
+                          Entries older are compressed into weekly summaries.
+
+        Returns:
+            A summary of what was compressed, or an error/no-op message.
+        """
+        if days_to_keep < 1:
+            return "Error: days_to_keep must be at least 1."
+
+        memory_path = self._identity_dir / "MEMORY.md"
+        if not memory_path.exists():
+            return "MEMORY.md does not exist — nothing to consolidate."
+
+        try:
+            content = memory_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"Error: could not read MEMORY.md: {exc}"
+
+        if not content.strip():
+            return "MEMORY.md is empty — nothing to consolidate."
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+        preamble, sections = _split_sections(content)
+
+        old_sections: list[tuple[datetime, str]] = []
+        kept_sections: list[tuple[Optional[datetime], str]] = []
+
+        for date, section_text in sections:
+            if date is not None and date < cutoff:
+                old_sections.append((date, section_text))
+            else:
+                kept_sections.append((date, section_text))
+
+        if not old_sections:
+            return f"No entries older than {days_to_keep} days found — nothing to consolidate."
+
+        # Group old entries by ISO week (e.g. "2026-W22").
+        weeks: dict[str, list[datetime]] = defaultdict(list)
+        for date, _ in old_sections:
+            iso_week = date.strftime("%G-W%V")
+            weeks[iso_week].append(date)
+
+        # Build a single summary heading per week in chronological order.
+        week_summaries: list[str] = []
+        for iso_week in sorted(weeks.keys()):
+            dates = weeks[iso_week]
+            count = len(dates)
+            first_date = min(dates).strftime("%Y-%m-%d")
+            last_date = max(dates).strftime("%Y-%m-%d")
+            week_summaries.append(
+                f"## Week {iso_week} (consolidated)\n\n"
+                f"{count} {'entry' if count == 1 else 'entries'} consolidated — "
+                f"{first_date} through {last_date}."
+            )
+
+        # Reconstruct: preamble → week summaries → recent/undated sections.
+        new_content_parts: list[str] = []
+        if preamble.strip():
+            new_content_parts.append(preamble.rstrip())
+        new_content_parts.extend(week_summaries)
+        new_content_parts.extend(section_text for _, section_text in kept_sections)
+
+        new_content = "\n\n".join(new_content_parts)
+
+        # Route through MemorySecurityAgent via update_memory_narrative (replace mode).
+        write_result = await self._update_memory_narrative(mode="replace", content=new_content)
+
+        if "Error" in write_result:
+            return write_result
+
+        n_weeks = len(weeks)
+        n_old = len(old_sections)
+        return (
+            f"Consolidated {n_old} {'entry' if n_old == 1 else 'entries'} older than "
+            f"{days_to_keep} days into {n_weeks} weekly "
+            f"{'summary' if n_weeks == 1 else 'summaries'}. {write_result}"
+        )
 
     # ------------------------------------------------------------------
     # Helpers

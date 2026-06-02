@@ -432,6 +432,15 @@ class HeartbeatConfig(BaseModel):
             "send_email, send_slack_message, send_sms, mcp:weather-mcp.get_forecast."
         ),
     )
+    consolidation_days_to_keep: int = Field(
+        default=7,
+        ge=1,
+        description=(
+            "Entries in MEMORY.md older than this many days are eligible for weekly "
+            "compression when the agent calls consolidate_memory_history. Default 7 "
+            "(keep the last week verbatim, summarize everything older by ISO week)."
+        ),
+    )
 
 
 class GoogleAuthConfig(BaseModel):
