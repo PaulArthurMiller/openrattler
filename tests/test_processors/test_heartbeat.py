@@ -52,8 +52,9 @@ def _make_processor(
     )
     runtime.initialize_session = AsyncMock(return_value=session_mock)
     # process_message returns based on current response_content; allow it to vary in tests.
+    # Accept **kwargs so the mock handles the new tool_allowlist parameter.
     runtime.process_message = AsyncMock(
-        side_effect=lambda sess, msg: _stub_response(response_content, msg.session_key)
+        side_effect=lambda sess, msg, **kwargs: _stub_response(response_content, msg.session_key)
     )
 
     identity_loader = MagicMock()
@@ -422,3 +423,92 @@ class TestSchedulerFirstTick:
         elapsed = (now - last).total_seconds()  # type: ignore[operator]
         # Elapsed should be tiny (milliseconds) — far less than 30 minutes.
         assert elapsed < 60  # generous 60-second window for slow test runners
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatProcessor — tool allowlist (46.2)
+# ---------------------------------------------------------------------------
+
+
+def _make_processor_with_config(
+    tool_allowlist: list[str],
+    response_content: str = "ok",
+    tmp_path: Path | None = None,
+) -> HeartbeatProcessor:
+    """Build a HeartbeatProcessor with a specific tool_allowlist from config."""
+    from openrattler.config.loader import AppConfig, HeartbeatConfig
+
+    config = AppConfig(heartbeat=HeartbeatConfig(tool_allowlist=tool_allowlist))
+
+    runtime = MagicMock()
+    session_mock = MagicMock(
+        key=_SESSION_KEY,
+        system_prompt="## Soul\n\nBase prompt.",
+        history=[],
+    )
+    runtime.initialize_session = AsyncMock(return_value=session_mock)
+    runtime.process_message = AsyncMock(
+        side_effect=lambda sess, msg, **kwargs: _stub_response(response_content, msg.session_key)
+    )
+    runtime._usage_store = None
+
+    identity_loader = MagicMock()
+    identity_loader.load_heartbeat_section = AsyncMock(return_value="## Heartbeat")
+
+    proc = HeartbeatProcessor(
+        runtime=runtime,
+        identity_loader=identity_loader,
+        identity_dir=tmp_path if tmp_path is not None else Path("/tmp/heartbeat_allowlist_test"),
+        config=config,
+    )
+    log_mock = MagicMock()
+    log_mock.read_recent = AsyncMock(return_value=[])
+    log_mock.append = AsyncMock()
+    log_mock.prune = AsyncMock()
+    log_mock.build_context_block = MagicMock(return_value="## Recent Heartbeat History\n")
+    proc._heartbeat_log = log_mock
+    return proc
+
+
+class TestHeartbeatToolAllowlist:
+    """Verifies that HeartbeatConfig.tool_allowlist is passed through to process_message."""
+
+    async def test_configured_allowlist_passed_to_process_message(self, tmp_path: Path) -> None:
+        """When tool_allowlist is set in config, process_message receives it."""
+        allowlist = ["research_query", "memory_read", "send_email"]
+        proc = _make_processor_with_config(tool_allowlist=allowlist, tmp_path=tmp_path)
+        await proc.run_cycle()
+
+        call_kwargs = proc._runtime.process_message.await_args.kwargs
+        print(f"[test] call_kwargs={call_kwargs}")
+        assert call_kwargs.get("tool_allowlist") == allowlist
+
+    async def test_empty_allowlist_passes_none_to_process_message(self, tmp_path: Path) -> None:
+        """When tool_allowlist is empty (default), process_message receives tool_allowlist=None."""
+        proc = _make_processor_with_config(tool_allowlist=[], tmp_path=tmp_path)
+        await proc.run_cycle()
+
+        call_kwargs = proc._runtime.process_message.await_args.kwargs
+        print(f"[test] call_kwargs={call_kwargs}")
+        assert call_kwargs.get("tool_allowlist") is None
+
+    async def test_tool_allowlist_stored_from_config(self) -> None:
+        """HeartbeatProcessor._tool_allowlist reflects HeartbeatConfig.tool_allowlist."""
+        from openrattler.config.loader import AppConfig, HeartbeatConfig
+
+        runtime = MagicMock()
+        identity_loader = MagicMock()
+        config = AppConfig(heartbeat=HeartbeatConfig(tool_allowlist=["research_query", "send_sms"]))
+        proc = HeartbeatProcessor(
+            runtime=runtime,
+            identity_loader=identity_loader,
+            config=config,
+        )
+        assert proc._tool_allowlist == ["research_query", "send_sms"]
+
+    async def test_no_config_gives_empty_tool_allowlist(self) -> None:
+        """When no config is provided, _tool_allowlist defaults to empty list."""
+        runtime = MagicMock()
+        identity_loader = MagicMock()
+        proc = HeartbeatProcessor(runtime=runtime, identity_loader=identity_loader, config=None)
+        assert proc._tool_allowlist == []

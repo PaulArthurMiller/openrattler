@@ -422,6 +422,16 @@ class HeartbeatConfig(BaseModel):
             "require approval for all heartbeat tool calls (not recommended)."
         ),
     )
+    tool_allowlist: list[str] = Field(
+        default_factory=list,
+        description=(
+            "If non-empty, restricts the tools sent to the LLM API during heartbeat turns. "
+            "Does not affect execution permissions — only the tools parameter in the API "
+            "request.  An empty list means no restriction (all permitted tools are sent). "
+            "Default heartbeat tools: research_query, memory_read, memory_write, "
+            "send_email, send_slack_message, send_sms, mcp:weather-mcp.get_forecast."
+        ),
+    )
 
 
 class GoogleAuthConfig(BaseModel):

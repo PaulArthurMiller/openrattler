@@ -585,3 +585,124 @@ class TestUsageRecording:
         turn_numbers = [r.turn_number for r in records]
         print(f"[test] turn_numbers={turn_numbers}")
         assert turn_numbers == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# process_message — tool_allowlist (46.2)
+# ---------------------------------------------------------------------------
+
+
+class TestToolAllowlist:
+    """Verifies that tool_allowlist restricts the tools parameter in the LLM API call."""
+
+    async def test_without_allowlist_sends_all_permitted_tools(self, tmp_path: Path) -> None:
+        """When no allowlist is passed, all allowed tools appear in the API tools parameter."""
+        td_a = ToolDefinition(
+            name="tool_alpha", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+        td_b = ToolDefinition(
+            name="tool_beta", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+
+        async def handler(**kwargs: object) -> str:
+            return "ok"
+
+        provider = _mock_provider(_text_response("done"))
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            extra_tools=[(td_a, handler), (td_b, handler)],
+            allowed_tools=["tool_alpha", "tool_beta"],
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg())
+
+        tools_sent = provider.complete.call_args.kwargs["tools"]
+        assert tools_sent is not None
+        names = {t["function"]["name"] for t in tools_sent}
+        print(f"[test] tools_sent_names={names}")
+        assert "tool_alpha" in names
+        assert "tool_beta" in names
+
+    async def test_with_allowlist_sends_only_listed_tool(self, tmp_path: Path) -> None:
+        """When tool_allowlist=["tool_alpha"], only tool_alpha appears in the API tools parameter."""
+        td_a = ToolDefinition(
+            name="tool_alpha", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+        td_b = ToolDefinition(
+            name="tool_beta", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+
+        async def handler(**kwargs: object) -> str:
+            return "ok"
+
+        provider = _mock_provider(_text_response("done"))
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            extra_tools=[(td_a, handler), (td_b, handler)],
+            allowed_tools=["tool_alpha", "tool_beta"],
+        )
+        session = await runtime.initialize_session(_SESSION)
+        await runtime.process_message(session, _user_msg(), tool_allowlist=["tool_alpha"])
+
+        tools_sent = provider.complete.call_args.kwargs["tools"]
+        assert tools_sent is not None
+        names = {t["function"]["name"] for t in tools_sent}
+        print(f"[test] tools_sent_names={names}")
+        assert "tool_alpha" in names
+        assert "tool_beta" not in names
+
+    async def test_allowlist_does_not_affect_executor_permissions(self, tmp_path: Path) -> None:
+        """A tool excluded from tool_allowlist can still be executed if called by the LLM."""
+        executed: list[str] = []
+
+        async def handler(**kwargs: object) -> str:
+            executed.append("tool_beta_ran")
+            return "beta-result"
+
+        td_b = ToolDefinition(
+            name="tool_beta", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+        # The LLM calls tool_beta even though tool_allowlist excluded it from the tools param.
+        provider = _mock_provider(
+            _tool_response("tool_beta", {}, "c1"),
+            _text_response("done"),
+        )
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            extra_tools=[(td_b, handler)],
+            allowed_tools=["tool_beta"],
+        )
+        session = await runtime.initialize_session(_SESSION)
+        # Exclude tool_beta from the tools parameter — but execution still succeeds.
+        await runtime.process_message(session, _user_msg(), tool_allowlist=["tool_beta"])
+        print(f"[test] executed={executed}")
+        assert "tool_beta_ran" in executed
+
+    async def test_empty_allowlist_uses_all_permitted_tools(self, tmp_path: Path) -> None:
+        """An empty list is treated as 'no restriction' — all permitted tools are sent."""
+        td_a = ToolDefinition(
+            name="tool_alpha", description="", parameters={}, trust_level_required=TrustLevel.main
+        )
+
+        async def handler(**kwargs: object) -> str:
+            return "ok"
+
+        provider = _mock_provider(_text_response("done"))
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            extra_tools=[(td_a, handler)],
+            allowed_tools=["tool_alpha"],
+        )
+        session = await runtime.initialize_session(_SESSION)
+        # Empty list → treated as None in _build_tool_defs → all permitted tools sent.
+        await runtime.process_message(session, _user_msg(), tool_allowlist=[])
+
+        tools_sent = provider.complete.call_args.kwargs["tools"]
+        assert tools_sent is not None
+        names = {t["function"]["name"] for t in tools_sent}
+        print(f"[test] tools_sent_names={names}")
+        assert "tool_alpha" in names

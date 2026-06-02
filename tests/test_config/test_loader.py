@@ -342,6 +342,33 @@ class TestHeartbeatConfig:
         with pytest.raises(Exception):
             HeartbeatConfig(log_max_retained=9)
 
+    # -- tool_allowlist (46.2) --
+
+    def test_tool_allowlist_defaults_to_empty_list(self) -> None:
+        cfg = HeartbeatConfig()
+        assert cfg.tool_allowlist == []
+
+    def test_tool_allowlist_accepts_nonempty_list(self) -> None:
+        cfg = HeartbeatConfig(tool_allowlist=["research_query", "memory_read"])
+        assert cfg.tool_allowlist == ["research_query", "memory_read"]
+
+    def test_tool_allowlist_round_trips_through_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "cfg.json"
+        original = AppConfig(
+            heartbeat=HeartbeatConfig(tool_allowlist=["research_query", "send_email"])
+        )
+        save_config(original, path)
+        loaded = load_config(path)
+        print(f"[test] tool_allowlist={loaded.heartbeat.tool_allowlist}")
+        assert loaded.heartbeat.tool_allowlist == ["research_query", "send_email"]
+
+    def test_empty_tool_allowlist_round_trips_through_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "cfg.json"
+        original = AppConfig(heartbeat=HeartbeatConfig(tool_allowlist=[]))
+        save_config(original, path)
+        loaded = load_config(path)
+        assert loaded.heartbeat.tool_allowlist == []
+
 
 # ---------------------------------------------------------------------------
 # UsageReportConfig

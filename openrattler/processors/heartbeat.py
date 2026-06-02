@@ -200,6 +200,10 @@ class HeartbeatProcessor(ProactiveProcessor):
         self._runtime = runtime
         self._identity_loader = identity_loader
         self._config = config
+        # Store tool allowlist from config; empty list means no restriction.
+        self._tool_allowlist: list[str] = (
+            config.heartbeat.tool_allowlist if config is not None else []
+        )
         # Derive identity dir from config or fall back to a safe default.
         from pathlib import Path
 
@@ -340,7 +344,12 @@ class HeartbeatProcessor(ProactiveProcessor):
                 },
             )
 
-            response = await self._runtime.process_message(session, trigger)
+            # Pass tool_allowlist when configured — restricts the tools parameter
+            # in the LLM API call without affecting execution permissions.
+            tool_allowlist = self._tool_allowlist if self._tool_allowlist else None
+            response = await self._runtime.process_message(
+                session, trigger, tool_allowlist=tool_allowlist
+            )
             content: str = response.params.get("content", "") or ""
 
             # Capture token totals from the usage store for the lifecycle close event.
