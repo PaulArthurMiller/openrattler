@@ -19,6 +19,24 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-02 — Piece 46.4 Memory Update History Scoping ✅
+
+**Branch:** `milestone-46.4-memory-update-history-scoping` | **PR:** pending
+
+Replaced the full transcript load in `_prompt_memory_update_on_shutdown()` with a scoped history load — dropping the memory-update LLM prompt from ~19,511 tokens to a few hundred tokens of recent activity.
+
+**Files modified:**
+- `openrattler/storage/memory.py` — `MemoryStore.save()` now auto-stamps `memory_last_updated` (UTC ISO string) into the persisted dict (copy — input not mutated); new `get_last_updated(agent_id) -> Optional[datetime]` method reads this key; `_compute_diff()` now excludes `memory_last_updated` alongside `history` (both are store-managed internal keys); added `_INTERNAL_KEYS` frozenset constant
+- `openrattler/startup.py` — new module-level `_extract_high_signal_records()` helper (keeps request/response, discards event/error/alert); new `_build_scoped_session_for_shutdown()` method on `ApplicationContext`: reads `memory_last_updated`, calls `load_since(since=..., max_turns=500)`, falls back to last-50 when timestamp absent or <10 records returned, then filters to high-signal; `_prompt_memory_update_on_shutdown()` now calls `_build_scoped_session_for_shutdown()` instead of `_get_or_create_session()`
+- `tests/test_storage/test_memory.py` — 8 new tests in `TestGetLastUpdated`; 1 new test `test_diff_ignores_memory_last_updated_key`; 6 existing round-trip tests updated to use `_user_data()` helper (strips `memory_last_updated` before equality checks)
+- `tests/test_startup/test_startup.py` — 6 tests in `TestExtractHighSignalRecords`; 4 tests in `TestScopedShutdownSession`; added imports for `_MAIN_SESSION_KEY`, `_extract_high_signal_records`, `Session`, `MemoryStore`, `TranscriptStore`
+
+**Tests:** 20 new, 2557 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 46.5 (MEMORY.md periodic consolidation) when ready.
+
+---
+
 ## /build 2026-06-02 — Piece 46.3 Remove Duplicate Tool Descriptions ✅
 
 **Branch:** `milestone-46.3-remove-duplicate-tool-descriptions` | **PR:** pending

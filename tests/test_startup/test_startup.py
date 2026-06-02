@@ -9,21 +9,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from datetime import datetime, timezone
+
 from openrattler.agents.providers.base import LLMProvider, LLMResponse
 from openrattler.channels.base import ChannelAdapter
 from openrattler.config.loader import AppConfig, ChannelConfig, ToolsConfig
 from openrattler.models.agents import AgentConfig, TrustLevel
 from openrattler.models.social import SocialSecretaryConfig
 from openrattler.models.messages import UniversalMessage, create_message
+from openrattler.models.sessions import Session
 from openrattler.startup import (
     ApplicationContext,
+    _MAIN_SESSION_KEY,
     _build_alert_adapters_list,
     _build_channel_adapters,
     _dispatch_to_channels,
+    _extract_high_signal_records,
     _resolve_agent_tools,
     build_application,
 )
 from openrattler.storage.audit import AuditLog
+from openrattler.storage.memory import MemoryStore
+from openrattler.storage.transcripts import TranscriptStore
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -813,3 +820,188 @@ class TestShutdownReliability:
 
         # os._exit should NOT have been called — clean shutdown finished first.
         mock_exit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestExtractHighSignalRecords
+# ---------------------------------------------------------------------------
+
+
+class TestExtractHighSignalRecords:
+    """_extract_high_signal_records filters to request and response messages."""
+
+    def _make_msg(self, msg_type: str) -> UniversalMessage:
+        return create_message(
+            from_agent="test",
+            to_agent="agent:main:main",
+            session_key="agent:main:main",
+            type=msg_type,  # type: ignore[arg-type]
+            operation="test_op",
+            trust_level="main",
+        )
+
+    def test_keeps_request_messages(self) -> None:
+        msgs = [self._make_msg("request")]
+        result = _extract_high_signal_records(msgs)
+        assert len(result) == 1
+        assert result[0].type == "request"
+        print("[extract_high_signal] request kept ✓")
+
+    def test_keeps_response_messages(self) -> None:
+        msgs = [self._make_msg("response")]
+        result = _extract_high_signal_records(msgs)
+        assert len(result) == 1
+        assert result[0].type == "response"
+        print("[extract_high_signal] response kept ✓")
+
+    def test_discards_event_messages(self) -> None:
+        msgs = [self._make_msg("event")]
+        result = _extract_high_signal_records(msgs)
+        assert result == []
+        print("[extract_high_signal] event discarded ✓")
+
+    def test_discards_error_messages(self) -> None:
+        msgs = [self._make_msg("error")]
+        result = _extract_high_signal_records(msgs)
+        assert result == []
+        print("[extract_high_signal] error discarded ✓")
+
+    def test_discards_alert_messages(self) -> None:
+        msgs = [self._make_msg("alert")]
+        result = _extract_high_signal_records(msgs)
+        assert result == []
+        print("[extract_high_signal] alert discarded ✓")
+
+    def test_mixed_messages_only_keeps_high_signal(self) -> None:
+        msgs = [
+            self._make_msg("request"),
+            self._make_msg("event"),
+            self._make_msg("response"),
+            self._make_msg("error"),
+            self._make_msg("alert"),
+        ]
+        result = _extract_high_signal_records(msgs)
+        assert len(result) == 2
+        assert all(m.type in {"request", "response"} for m in result)
+        print(f"[extract_high_signal] 2 of 5 kept ✓")
+
+    def test_empty_input_returns_empty(self) -> None:
+        result = _extract_high_signal_records([])
+        assert result == []
+        print("[extract_high_signal] empty input → [] ✓")
+
+
+# ---------------------------------------------------------------------------
+# TestScopedShutdownSession
+# ---------------------------------------------------------------------------
+
+
+class TestScopedShutdownSession:
+    """_build_scoped_session_for_shutdown loads history scoped to last memory update."""
+
+    async def test_uses_load_since_when_last_updated_known(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        """When memory_last_updated is set, load_since is used instead of load."""
+        ctx = await _make_context(tmp_path, stub_provider)
+
+        # Write a memory_last_updated timestamp so get_last_updated returns a value.
+        memory_store = ctx._runtime._memory_store
+        await memory_store.save("main", {"facts": {}})
+        last_updated = await memory_store.get_last_updated("main")
+        assert last_updated is not None
+
+        # Append two messages AFTER the last_updated timestamp.
+        transcript_store = ctx._runtime._transcript_store
+        for i in range(2):
+            msg = create_message(
+                from_agent="user",
+                to_agent="agent:main:main",
+                session_key=_MAIN_SESSION_KEY,
+                type="request",
+                operation="chat",
+                trust_level="main",
+                params={"content": f"message {i}"},
+            )
+            await transcript_store.append(_MAIN_SESSION_KEY, msg)
+
+        session = await ctx._build_scoped_session_for_shutdown()
+        # Both post-update messages should be in the scoped history (request type).
+        assert len(session.history) == 2
+        print(f"[scoped_session] history={len(session.history)} msgs ✓")
+
+    async def test_uses_last50_fallback_when_no_last_updated(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        """With no memory_last_updated, falls back to last-50 count-based load."""
+        ctx = await _make_context(tmp_path, stub_provider)
+
+        # No memory file → get_last_updated returns None.
+        transcript_store = ctx._runtime._transcript_store
+        for i in range(10):
+            msg = create_message(
+                from_agent="user",
+                to_agent="agent:main:main",
+                session_key=_MAIN_SESSION_KEY,
+                type="request",
+                operation="chat",
+                trust_level="main",
+                params={"content": f"msg {i}"},
+            )
+            await transcript_store.append(_MAIN_SESSION_KEY, msg)
+
+        session = await ctx._build_scoped_session_for_shutdown()
+        # All 10 messages are in the last-50 window and are request type.
+        assert len(session.history) == 10
+        print(f"[scoped_session] fallback path → {len(session.history)} msgs ✓")
+
+    async def test_falls_back_when_too_few_messages_in_window(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        """When load_since returns fewer than 10 records, falls back to last-50."""
+        ctx = await _make_context(tmp_path, stub_provider)
+        memory_store = ctx._runtime._memory_store
+        transcript_store = ctx._runtime._transcript_store
+
+        # Write 20 messages BEFORE the memory update.
+        for i in range(20):
+            msg = create_message(
+                from_agent="user",
+                to_agent="agent:main:main",
+                session_key=_MAIN_SESSION_KEY,
+                type="request",
+                operation="chat",
+                trust_level="main",
+                params={"content": f"old {i}"},
+            )
+            await transcript_store.append(_MAIN_SESSION_KEY, msg)
+
+        # Stamp memory_last_updated now (after all old messages).
+        await memory_store.save("main", {"facts": {}})
+
+        # Write only 3 messages AFTER the timestamp (< 10 → triggers fallback).
+        for i in range(3):
+            msg = create_message(
+                from_agent="user",
+                to_agent="agent:main:main",
+                session_key=_MAIN_SESSION_KEY,
+                type="request",
+                operation="chat",
+                trust_level="main",
+                params={"content": f"new {i}"},
+            )
+            await transcript_store.append(_MAIN_SESSION_KEY, msg)
+
+        session = await ctx._build_scoped_session_for_shutdown()
+        # Fallback: last 50 of 23 total = all 23; all are request type.
+        assert len(session.history) == 23
+        print(f"[scoped_session] too-few fallback → {len(session.history)} msgs ✓")
+
+    async def test_returns_session_with_correct_key_and_agent_id(
+        self, tmp_path: Path, stub_provider: _StubProvider
+    ) -> None:
+        ctx = await _make_context(tmp_path, stub_provider)
+        session = await ctx._build_scoped_session_for_shutdown()
+        assert session.key == _MAIN_SESSION_KEY
+        assert session.agent_id == ctx._runtime._config.agent_id
+        print(f"[scoped_session] key={session.key} agent_id={session.agent_id} ✓")

@@ -151,6 +151,18 @@ _HARD_EXIT_TIMEOUT: float = 20.0
 # ---------------------------------------------------------------------------
 
 
+def _extract_high_signal_records(messages: list[UniversalMessage]) -> list[UniversalMessage]:
+    """Retain only request and response messages for the shutdown memory prompt.
+
+    Discards intermediate tool-result JSON, assistant thinking turns, and
+    other event/error/alert messages that carry little contextual value for
+    memory consolidation.  The LLM only needs to see what was asked and what
+    was answered to write a meaningful memory update.
+    """
+    high_signal_types: frozenset[str] = frozenset({"request", "response"})
+    return [m for m in messages if m.type in high_signal_types]
+
+
 def _build_alert_adapters_list(adapters: dict[str, ChannelAdapter]) -> list[ChannelAdapter]:
     """Return adapters that are connected and have ``send()`` available.
 
@@ -563,7 +575,7 @@ class ApplicationContext:
     async def _prompt_memory_update_on_shutdown(self) -> None:
         """Send a shutdown prompt asking Corvus to update memory before the app stops."""
         try:
-            session = await self._get_or_create_session(_MAIN_SESSION_KEY)
+            session = await self._build_scoped_session_for_shutdown()
             msg = create_message(
                 from_agent="system:shutdown",
                 to_agent=self._runtime._config.agent_id,
@@ -593,6 +605,62 @@ class ApplicationContext:
             # CancelledError is BaseException — swallow it here so the caller's
             # finally block always reaches stop() and releases the gateway port.
             logger.exception("ApplicationContext: shutdown memory prompt failed")
+
+    async def _build_scoped_session_for_shutdown(self) -> Session:
+        """Build a Session with scoped history for the shutdown memory prompt.
+
+        Loads only transcript records since the last memory update, then
+        filters to high-signal messages (request/response).  Falls back to
+        the last 50 messages when no timestamp is available or too few records
+        fall within the window.  This replaces the full ``initialize_session``
+        call, dropping the memory-prompt context from ~19,511 tokens to a few
+        hundred tokens of recent activity.
+        """
+        agent_id = self._runtime._config.agent_id
+        transcript_store = self._runtime._transcript_store
+        memory_store = self._runtime._memory_store
+
+        # Reuse the already-built system prompt from the live session when
+        # possible to avoid re-reading identity files at shutdown.
+        if _MAIN_SESSION_KEY in self._sessions:
+            system_prompt = self._sessions[_MAIN_SESSION_KEY].system_prompt
+        else:
+            if self._runtime._identity_loader is not None:
+                identity_prompt = await self._runtime._identity_loader.load_system_prompt()
+            else:
+                identity_prompt = self._runtime._config.system_prompt
+            alerts_section = await self._runtime._load_social_alerts(_MAIN_SESSION_KEY)
+            system_prompt = self._runtime._build_system_prompt(identity_prompt, alerts_section)
+
+        # Load records since the last memory update, with a generous cap so
+        # the whole window is included before the high-signal filter runs.
+        last_updated = await memory_store.get_last_updated("main")
+        if last_updated is not None:
+            recent_msgs = await transcript_store.load_since(
+                _MAIN_SESSION_KEY,
+                since_iso=last_updated.isoformat(),
+                max_turns=500,
+            )
+            # Too few records in the window → fall back to count-based load.
+            if len(recent_msgs) < 10:
+                all_msgs = await transcript_store.load(_MAIN_SESSION_KEY)
+                recent_msgs = all_msgs[-50:]
+        else:
+            all_msgs = await transcript_store.load(_MAIN_SESSION_KEY)
+            recent_msgs = all_msgs[-50:]
+
+        high_signal = _extract_high_signal_records(recent_msgs)
+        logger.info(
+            "SHUTDOWN_MEMORY_PROMPT: scoped history=%d msgs (last_updated=%s)",
+            len(high_signal),
+            last_updated.isoformat() if last_updated else "none",
+        )
+        return Session(
+            key=_MAIN_SESSION_KEY,
+            agent_id=agent_id,
+            history=high_signal,
+            system_prompt=system_prompt,
+        )
 
     # ------------------------------------------------------------------
     # Session management
