@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,16 @@ from openrattler.storage.memory import (
     _compute_diff,
     _validate_agent_id,
 )
+
+# ---------------------------------------------------------------------------
+# Helper — strip store-managed internal keys before comparing user data
+# ---------------------------------------------------------------------------
+
+
+def _user_data(d: dict) -> dict:
+    """Return *d* without internal keys stamped by MemoryStore (e.g. memory_last_updated)."""
+    return {k: v for k, v in d.items() if k not in ("memory_last_updated",)}
+
 
 # ---------------------------------------------------------------------------
 # Load
@@ -28,7 +39,8 @@ class TestLoad:
         store = MemoryStore(tmp_path)
         data: dict = {"facts": {"name": "Alice"}, "preferences": {}}
         await store.save("main", data)
-        assert await store.load("main") == data
+        # save() stamps memory_last_updated; check user-supplied keys only.
+        assert _user_data(await store.load("main")) == data
 
     async def test_load_nonexistent_base_returns_empty(self, tmp_path: Path) -> None:
         store = MemoryStore(tmp_path / "nonexistent")
@@ -59,19 +71,19 @@ class TestSave:
             "instructions": ["Be helpful"],
         }
         await store.save("main", data)
-        assert await store.load("main") == data
+        assert _user_data(await store.load("main")) == data
 
     async def test_save_overwrites_existing(self, tmp_path: Path) -> None:
         store = MemoryStore(tmp_path)
         await store.save("main", {"facts": {"x": 1}})
         await store.save("main", {"facts": {"x": 99}})
-        assert await store.load("main") == {"facts": {"x": 99}}
+        assert _user_data(await store.load("main")) == {"facts": {"x": 99}}
 
     async def test_save_preserves_unicode(self, tmp_path: Path) -> None:
         store = MemoryStore(tmp_path)
         data: dict = {"facts": {"greeting": "こんにちは", "emoji": "🎉"}}
         await store.save("main", data)
-        assert await store.load("main") == data
+        assert _user_data(await store.load("main")) == data
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +108,7 @@ class TestAtomicWrite:
 
         await store.save("main", {"facts": {"fresh": True}})
 
-        assert await store.load("main") == {"facts": {"fresh": True}}
+        assert _user_data(await store.load("main")) == {"facts": {"fresh": True}}
         assert not stale_tmp.exists()
 
     async def test_sequential_saves_produce_correct_final_data(self, tmp_path: Path) -> None:
@@ -104,7 +116,7 @@ class TestAtomicWrite:
         store = MemoryStore(tmp_path)
         await store.save("main", {"facts": {"version": 1}})
         await store.save("main", {"facts": {"version": 2}})
-        assert await store.load("main") == {"facts": {"version": 2}}
+        assert _user_data(await store.load("main")) == {"facts": {"version": 2}}
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +163,16 @@ class TestComputeDiff:
             "history": [{"timestamp": "t", "change": "init", "approved_by": "user"}],
         }
         await store.save("main", data)
-        # Different history in proposed — must not appear in diff
+        # Different history and absent memory_last_updated in proposed — neither
+        # should appear in the diff (both are internal store-managed keys).
         diff = await store.compute_diff("main", {"facts": {}, "history": []})
+        assert diff == {"added": {}, "removed": {}, "modified": {}}
+
+    async def test_diff_ignores_memory_last_updated_key(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        await store.save("main", {"facts": {}})
+        # proposed has no memory_last_updated — must not appear in diff["removed"]
+        diff = await store.compute_diff("main", {"facts": {}})
         assert diff == {"added": {}, "removed": {}, "modified": {}}
 
     async def test_diff_all_added_for_new_agent(self, tmp_path: Path) -> None:
@@ -320,3 +340,85 @@ class TestPathSanitization:
         store = MemoryStore(tmp_path)
         with pytest.raises(ValueError):
             await store.apply_changes("../evil", {}, "user")
+
+
+# ---------------------------------------------------------------------------
+# GetLastUpdated
+# ---------------------------------------------------------------------------
+
+
+class TestGetLastUpdated:
+    async def test_returns_none_on_fresh_memory(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        result = await store.get_last_updated("main")
+        assert result is None
+        print("[get_last_updated] fresh store → None ✓")
+
+    async def test_returns_datetime_after_save(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        before = datetime.now(timezone.utc)
+        await store.save("main", {"facts": {}})
+        after = datetime.now(timezone.utc)
+        result = await store.get_last_updated("main")
+        assert result is not None
+        assert before <= result <= after
+        print(f"[get_last_updated] after save → {result} ✓")
+
+    async def test_result_is_timezone_aware(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        await store.save("main", {"facts": {}})
+        result = await store.get_last_updated("main")
+        assert result is not None
+        assert result.tzinfo is not None
+        print(f"[get_last_updated] timezone-aware: {result.tzinfo} ✓")
+
+    async def test_updates_on_each_save(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        await store.save("main", {"facts": {"v": 1}})
+        first = await store.get_last_updated("main")
+        assert first is not None
+        # Second save must produce a timestamp >= the first.
+        await store.save("main", {"facts": {"v": 2}})
+        second = await store.get_last_updated("main")
+        assert second is not None
+        assert second >= first
+        print(f"[get_last_updated] second={second} >= first={first} ✓")
+
+    async def test_returns_datetime_after_apply_changes(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        # apply_changes calls save() internally → timestamp should be stamped.
+        await store.apply_changes("main", {"facts": {"x": 1}}, "user")
+        result = await store.get_last_updated("main")
+        assert result is not None
+        print(f"[get_last_updated] after apply_changes → {result} ✓")
+
+    async def test_save_does_not_mutate_input_dict(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        data: dict = {"facts": {"name": "Alice"}}
+        await store.save("main", data)
+        # The caller's original dict must not have memory_last_updated injected.
+        assert "memory_last_updated" not in data
+        print("[get_last_updated] input dict not mutated ✓")
+
+    async def test_returns_none_when_key_absent_in_legacy_file(self, tmp_path: Path) -> None:
+        # Simulate a legacy memory.json written before memory_last_updated existed.
+        store = MemoryStore(tmp_path)
+        path = tmp_path / "main" / "memory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+
+        path.write_text(_json.dumps({"facts": {"name": "legacy"}}), encoding="utf-8")
+        result = await store.get_last_updated("main")
+        assert result is None
+        print("[get_last_updated] legacy file (no key) → None ✓")
+
+    async def test_returns_none_when_value_is_invalid(self, tmp_path: Path) -> None:
+        store = MemoryStore(tmp_path)
+        path = tmp_path / "main" / "memory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+
+        path.write_text(_json.dumps({"memory_last_updated": "not-a-date"}), encoding="utf-8")
+        result = await store.get_last_updated("main")
+        assert result is None
+        print("[get_last_updated] invalid timestamp value → None ✓")

@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+# Internal keys managed by the store itself — excluded from user-visible diffs.
+_INTERNAL_KEYS: frozenset[str] = frozenset({"history", "memory_last_updated"})
+
 if TYPE_CHECKING:
     from openrattler.security.memory_security import MemorySecurityAgent
 
@@ -72,8 +75,8 @@ def _agent_path(base_dir: Path, agent_id: str) -> Path:
 def _compute_diff(current: dict[str, Any], proposed: dict[str, Any]) -> dict[str, Any]:
     """Compute a shallow diff between *current* and *proposed*.
 
-    The ``history`` key is excluded from comparison because it is managed
-    internally and always grows monotonically.
+    Internal keys (``history``, ``memory_last_updated``) are excluded from
+    comparison because they are managed by the store itself, not by callers.
 
     Returns a dict with three keys:
     - ``added``:    keys present in *proposed* but absent from *current*
@@ -81,8 +84,8 @@ def _compute_diff(current: dict[str, Any], proposed: dict[str, Any]) -> dict[str
     - ``modified``: keys present in both with different values
                     (each entry is ``{"old": ..., "new": ...}``)
     """
-    cur_keys = {k for k in current if k != "history"}
-    pro_keys = {k for k in proposed if k != "history"}
+    cur_keys = {k for k in current if k not in _INTERNAL_KEYS}
+    pro_keys = {k for k in proposed if k not in _INTERNAL_KEYS}
     return {
         "added": {k: proposed[k] for k in pro_keys - cur_keys},
         "removed": {k: current[k] for k in cur_keys - pro_keys},
@@ -153,10 +156,38 @@ class MemoryStore:
         Creates the agent directory if it does not exist.  Uses a
         temp-file + rename strategy so a crash mid-write never leaves a
         corrupt memory file.
+
+        Automatically stamps ``memory_last_updated`` with the current UTC
+        timestamp so callers can later scope history loads to activity that
+        occurred after the last successful memory write.  The input dict is
+        never mutated.
         """
         _validate_agent_id(agent_id)
+        stamped = {**memory, "memory_last_updated": datetime.now(timezone.utc).isoformat()}
         path = _agent_path(self._base, agent_id)
-        await asyncio.to_thread(_sync_save, path, memory)
+        await asyncio.to_thread(_sync_save, path, stamped)
+
+    async def get_last_updated(self, agent_id: str) -> Optional[datetime]:
+        """Return the UTC datetime of the last ``save()`` call, or ``None``.
+
+        Reads ``memory_last_updated`` from the stored JSON.  Returns ``None``
+        when no memory file exists yet, when the key is absent (legacy files),
+        or when the stored value is not a parseable ISO 8601 string.
+
+        The returned datetime is always timezone-aware (UTC).
+        """
+        _validate_agent_id(agent_id)
+        mem = await self.load(agent_id)
+        raw = mem.get("memory_last_updated")
+        if raw is None:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(raw))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            return None
 
     async def compute_diff(self, agent_id: str, proposed: dict[str, Any]) -> dict[str, Any]:
         """Compare the current on-disk memory for *agent_id* against *proposed*.
