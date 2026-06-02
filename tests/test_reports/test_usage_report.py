@@ -85,6 +85,7 @@ def generator(store: UsageStore) -> UsageReportGenerator:
         usage_store=store,
         idle_timeout_minutes=60,
         context_growth_warning_pct=500.0,
+        staleness_window_minutes=60,
     )
 
 
@@ -313,11 +314,12 @@ class TestSubSessions:
     ) -> None:
         """A research session with no parent appears as a standalone top-level session.
 
-        Uses a 0-minute idle timeout so the just-written session is classified closed.
+        Without a lifecycle store, old sessions fall to stale_unclosed.
         """
         generator = UsageReportGenerator(
             usage_store=store,
-            idle_timeout_minutes=0,
+            # staleness_window_minutes=0 means any session is immediately stale_unclosed
+            staleness_window_minutes=0,
         )
         sk = "agent:research:standalone01"
         await _write(
@@ -326,9 +328,10 @@ class TestSubSessions:
         )
         report = await generator.generate()
         assert sk in report
-        # With 0-minute idle timeout the session is closed; it should appear in CLOSED SESSIONS.
-        closed_section = report.split("CLOSED SESSIONS")[1]
-        assert sk in closed_section
+        # With 0-minute staleness window and no lifecycle store the session is
+        # stale_unclosed; it should appear in STALE / UNCLOSED SESSIONS.
+        stale_section = report.split("STALE / UNCLOSED")[1]
+        assert sk in stale_section
 
 
 # ---------------------------------------------------------------------------
@@ -351,28 +354,31 @@ class TestActiveClosedClassification:
         active_section = report.split("ACTIVE SESSIONS")[1].split("CLOSED SESSIONS")[0]
         assert sk in active_section
 
-    async def test_old_session_shown_in_closed_section(self, store: UsageStore) -> None:
-        """A session whose last turn was > idle_timeout ago should be closed."""
+    async def test_old_session_shown_in_stale_section(self, store: UsageStore) -> None:
+        """A session whose last turn was > staleness_window ago and has no close event
+        should be stale_unclosed (not active)."""
         generator = UsageReportGenerator(
             usage_store=store,
-            idle_timeout_minutes=1,  # 1 minute timeout
+            staleness_window_minutes=1,
         )
         sk = "agent:main:slack:old"
-        await _write(store, _make_record(sk))
-        # Simulate time passing by using a very short idle timeout and a
-        # manually fabricated summary (we can't rewind the clock, so we test
-        # _is_active directly with an old timestamp).
         old_time = _now() - timedelta(hours=2)
-        is_active = generator._is_active(old_time, _now())
-        assert is_active is False
+        status = await generator._get_session_status(sk, old_time, _now())
+        assert status == "stale_unclosed"
 
-    async def test_is_active_within_timeout(self, generator: UsageReportGenerator) -> None:
-        recent = _now() - timedelta(minutes=30)  # within 60-min window
-        assert generator._is_active(recent, _now()) is True
+    async def test_session_status_active_within_window(
+        self, generator: UsageReportGenerator
+    ) -> None:
+        recent = _now() - timedelta(minutes=30)  # within 60-min staleness window
+        status = await generator._get_session_status("agent:main:main", recent, _now())
+        assert status == "active"
 
-    async def test_is_active_outside_timeout(self, generator: UsageReportGenerator) -> None:
+    async def test_session_status_stale_outside_window(
+        self, generator: UsageReportGenerator
+    ) -> None:
         old = _now() - timedelta(hours=2)
-        assert generator._is_active(old, _now()) is False
+        status = await generator._get_session_status("agent:main:main", old, _now())
+        assert status == "stale_unclosed"
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +465,7 @@ class TestBreakdown:
         # Generate and parse cost section manually to verify logic.
         # We verify via the generator internals (not by parsing the text).
         records = await store.load_since(_now() - timedelta(hours=24))
-        sessions = generator._build_session_summaries(records, _now())
+        sessions = await generator._build_session_summaries(records, _now())
         channel_costs: dict[str, float] = {}
         for s in sessions:
             channel_costs[s.channel] = channel_costs.get(s.channel, 0.0) + s.total_cost_usd
@@ -489,6 +495,7 @@ class TestRequiredSections:
             "COST BY AGENT TYPE",
             "ACTIVE SESSIONS",
             "CLOSED SESSIONS",
+            "STALE / UNCLOSED",
             "CONTEXT ACCUMULATION WARNINGS",
             "GENERATED:",
         ]
@@ -537,3 +544,86 @@ class TestFormattingHelpers:
     def test_format_tool_summary_empty(self, generator: UsageReportGenerator) -> None:
         result = generator._format_tool_summary({})
         assert result == "(none)"
+
+
+# ---------------------------------------------------------------------------
+# Tri-state session_status (46.1)
+# ---------------------------------------------------------------------------
+
+
+class TestTriStateSessionStatus:
+    async def test_closed_status_when_lifecycle_store_has_close_event(
+        self, store: UsageStore, tmp_path: Path
+    ) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from openrattler.storage.session_lifecycle import SessionLifecycleStore
+
+        # Build a real lifecycle store with a real close event.
+        lc_store = SessionLifecycleStore(tmp_path / "session_lifecycle.jsonl")
+        sk = "agent:main:main"
+        await lc_store.emit_open(sk, "interactive")
+        await lc_store.emit_close(sk, "disconnect")
+
+        generator = UsageReportGenerator(
+            usage_store=store,
+            lifecycle_store=lc_store,
+            staleness_window_minutes=60,
+        )
+        status = await generator._get_session_status(sk, _now(), _now())
+        assert status == "closed"
+
+    async def test_active_status_when_no_lifecycle_store_recent_turn(
+        self, store: UsageStore
+    ) -> None:
+        generator = UsageReportGenerator(
+            usage_store=store,
+            staleness_window_minutes=60,
+        )
+        recent = _now() - timedelta(minutes=5)
+        status = await generator._get_session_status("agent:main:main", recent, _now())
+        assert status == "active"
+
+    async def test_stale_unclosed_when_no_lifecycle_store_old_turn(self, store: UsageStore) -> None:
+        generator = UsageReportGenerator(
+            usage_store=store,
+            staleness_window_minutes=30,
+        )
+        old = _now() - timedelta(hours=2)
+        status = await generator._get_session_status("agent:main:main", old, _now())
+        assert status == "stale_unclosed"
+
+    async def test_session_type_derived_from_session_key(
+        self, store: UsageStore, generator: UsageReportGenerator
+    ) -> None:
+        await _write(
+            store,
+            _make_record("agent:main:heartbeat:hb_x"),
+        )
+        records = await store.load_since(_now() - timedelta(hours=1))
+        summaries = await generator._build_session_summaries(records, _now())
+        assert len(summaries) == 1
+        assert summaries[0].session_type == "heartbeat"
+
+    async def test_stale_unclosed_section_present_in_report(self, store: UsageStore) -> None:
+        generator = UsageReportGenerator(
+            usage_store=store,
+            staleness_window_minutes=0,  # every session immediately stale
+        )
+        await _write(store, _make_record("agent:main:slack:old01"))
+        report = await generator.generate()
+        assert "STALE / UNCLOSED" in report
+        assert "agent:main:slack:old01" in report.split("STALE / UNCLOSED")[1]
+
+    async def test_session_type_breakdown_present(
+        self, store: UsageStore, generator: UsageReportGenerator
+    ) -> None:
+        await _write(
+            store,
+            _make_record("agent:main:heartbeat:hb_x"),
+            _make_record("agent:main:main"),
+        )
+        report = await generator.generate()
+        assert "SESSIONS BY TYPE" in report
+        assert "heartbeat" in report
+        assert "interactive" in report

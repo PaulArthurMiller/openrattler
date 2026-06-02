@@ -80,6 +80,7 @@ from openrattler.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from openrattler.agents.research.agent import ResearchAgent
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
     from openrattler.storage.usage import UsageStore
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ class AgentCreator:
         audit: AuditLog,
         usage_store: Optional["UsageStore"] = None,
         parent_session_key: Optional[str] = None,
+        lifecycle_store: Optional["SessionLifecycleStore"] = None,
     ) -> "ResearchAgent":
         """Validate a research_query UM and return a configured ResearchAgent.
 
@@ -430,6 +432,7 @@ class AgentCreator:
             provider=self._provider,
             usage_store=usage_store,
             parent_session_key=parent_session_key,
+            lifecycle_store=lifecycle_store,
         )
 
     # ------------------------------------------------------------------

@@ -2,6 +2,11 @@
 
 Reads TurnRecords from UsageStore, groups them into per-session summaries,
 detects context accumulation, and produces a plain-text email report.
+
+Session status is tri-state (piece 46.1):
+  closed         — a close event exists in SessionLifecycleStore
+  active         — no close event, last_turn_at is recent (within staleness_window_minutes)
+  stale_unclosed — no close event, last_turn_at is old
 """
 
 from __future__ import annotations
@@ -9,11 +14,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from openrattler import __version__
+from openrattler.models.session_lifecycle import infer_session_type
 from openrattler.models.usage import TurnRecord
 from openrattler.storage.usage import UsageStore
+
+if TYPE_CHECKING:
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -38,7 +47,8 @@ class SessionSummary:
     models_used: list[str]  # deduplicated, insertion-ordered
     tool_calls: dict[str, int]  # {tool_name: count}
     prompt_tokens_per_turn: list[int]  # ordered by turn_number for growth analysis
-    is_active: bool  # True when last_turn_at > now - idle_timeout_minutes
+    session_status: Literal["closed", "active", "stale_unclosed"] = "active"
+    session_type: str = "unknown"  # derived from session_key via infer_session_type()
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +64,14 @@ class UsageReportGenerator:
         usage_store: UsageStore,
         idle_timeout_minutes: int = 60,
         context_growth_warning_pct: float = 500.0,
+        lifecycle_store: Optional["SessionLifecycleStore"] = None,
+        staleness_window_minutes: int = 30,
     ) -> None:
         self._store = usage_store
         self._idle_timeout_minutes = idle_timeout_minutes
         self._context_growth_warning_pct = context_growth_warning_pct
+        self._lifecycle_store = lifecycle_store
+        self._staleness_window_minutes = staleness_window_minutes
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,14 +101,14 @@ class UsageReportGenerator:
         # Apply upper bound filter (load_since only filters by lower bound).
         records = [r for r in records if r.recorded_at <= until]
 
-        sessions = self._build_session_summaries(records, now)
+        sessions = await self._build_session_summaries(records, now)
         return self._format_report(sessions, since, until, now)
 
     # ------------------------------------------------------------------
     # Session aggregation
     # ------------------------------------------------------------------
 
-    def _build_session_summaries(
+    async def _build_session_summaries(
         self,
         records: list[TurnRecord],
         now: datetime,
@@ -112,11 +126,11 @@ class UsageReportGenerator:
 
         summaries: list[SessionSummary] = []
         for session_key, recs in per_session.items():
-            summaries.append(self._summarize_session(session_key, recs, now))
+            summaries.append(await self._summarize_session(session_key, recs, now))
 
         return summaries
 
-    def _summarize_session(
+    async def _summarize_session(
         self,
         session_key: str,
         recs: list[TurnRecord],
@@ -137,6 +151,8 @@ class UsageReportGenerator:
             for tool_name in r.tool_calls:
                 tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
 
+        status = await self._get_session_status(session_key, last.recorded_at, now)
+
         return SessionSummary(
             session_key=session_key,
             agent_type=first.agent_type,
@@ -152,17 +168,39 @@ class UsageReportGenerator:
             models_used=list(seen_models.keys()),
             tool_calls=tool_counts,
             prompt_tokens_per_turn=[r.prompt_tokens for r in recs],
-            is_active=self._is_active(last.recorded_at, now),
+            session_status=status,
+            session_type=infer_session_type(session_key),
         )
 
     # ------------------------------------------------------------------
     # Helper computations
     # ------------------------------------------------------------------
 
-    def _is_active(self, last_turn_at: datetime, now: datetime) -> bool:
-        """Return True if the session has been active within the idle timeout."""
+    async def _get_session_status(
+        self,
+        session_key: str,
+        last_turn_at: datetime,
+        now: datetime,
+    ) -> Literal["closed", "active", "stale_unclosed"]:
+        """Return tri-state session status.
+
+        closed         — a close event exists in the lifecycle store
+        active         — no close event, last_turn_at within staleness_window_minutes
+        stale_unclosed — no close event, last_turn_at older than staleness_window_minutes
+        """
+        if self._lifecycle_store is not None:
+            try:
+                close_evt = await self._lifecycle_store.get_close_event(session_key)
+                if close_evt is not None:
+                    return "closed"
+            except Exception:
+                pass  # lifecycle store unavailable — fall through to heuristic
+
+        # No close event found (or no lifecycle store) — use recency heuristic.
         delta = now - last_turn_at
-        return delta < timedelta(minutes=self._idle_timeout_minutes)
+        if delta < timedelta(minutes=self._staleness_window_minutes):
+            return "active"
+        return "stale_unclosed"
 
     def _context_growth_pct(self, per_turn: list[int]) -> Optional[float]:
         """Return percentage growth from first to last prompt_token value.
@@ -261,8 +299,16 @@ class UsageReportGenerator:
         # Aggregate totals
         total_cost = sum(s.total_cost_usd for s in sessions)
         total_tokens = sum(s.total_tokens for s in sessions)
-        active = [s for s in sessions if s.is_active]
-        closed = [s for s in sessions if not s.is_active]
+        active = [s for s in sessions if s.session_status == "active"]
+        closed = [s for s in sessions if s.session_status == "closed"]
+        stale = [s for s in sessions if s.session_status == "stale_unclosed"]
+
+        # Subtotals by session_type
+        type_counts: dict[str, int] = {}
+        type_costs: dict[str, float] = {}
+        for s in sessions:
+            type_counts[s.session_type] = type_counts.get(s.session_type, 0) + 1
+            type_costs[s.session_type] = type_costs.get(s.session_type, 0.0) + s.total_cost_usd
 
         # SUMMARY
         lines.append("SUMMARY")
@@ -271,7 +317,17 @@ class UsageReportGenerator:
         lines.append(f"  Total tokens:           {total_tokens:,}")
         lines.append(f"  Active sessions:        {len(active)}")
         lines.append(f"  Closed sessions:        {len(closed)}")
+        lines.append(f"  Stale/unclosed:         {len(stale)}")
         lines.append("")
+
+        # SESSION TYPE BREAKDOWN
+        if type_counts:
+            lines.append("SESSIONS BY TYPE")
+            lines.append("─" * 52)
+            for stype, count in sorted(type_counts.items()):
+                cost = type_costs.get(stype, 0.0)
+                lines.append(f"  {stype:<20} {count:>3} sessions  ${cost:.3f}")
+            lines.append("")
 
         # COST BY CHANNEL
         channel_costs: dict[str, float] = {}
@@ -308,10 +364,10 @@ class UsageReportGenerator:
                 sub_sessions.setdefault(s.parent_session_key, []).append(s)
 
         # ACTIVE SESSIONS
-        active_top = [s for s in top_level if s.is_active]
+        active_top = [s for s in top_level if s.session_status == "active"]
         lines.append("─" * 53)
         lines.append(
-            "ACTIVE SESSIONS (still open — no close in last " f"{self._idle_timeout_minutes} min)"
+            f"ACTIVE SESSIONS (last turn within {self._staleness_window_minutes} min, no close event)"
         )
         lines.append("─" * 53)
         if not active_top:
@@ -323,17 +379,36 @@ class UsageReportGenerator:
 
         # CLOSED SESSIONS
         closed_top = sorted(
-            [s for s in top_level if not s.is_active],
+            [s for s in top_level if s.session_status == "closed"],
             key=lambda s: s.last_turn_at,
             reverse=True,
         )
         lines.append("─" * 52)
-        lines.append("CLOSED SESSIONS (last 24h, most recent first)")
+        lines.append("CLOSED SESSIONS (close event received, most recent first)")
         lines.append("─" * 52)
         if not closed_top:
             lines.append("  (none)")
         else:
             for s in closed_top:
+                lines.extend(self._format_session_block(s, sub_sessions, now, indent=""))
+        lines.append("")
+
+        # STALE / UNCLOSED SESSIONS
+        stale_top = sorted(
+            [s for s in top_level if s.session_status == "stale_unclosed"],
+            key=lambda s: s.last_turn_at,
+            reverse=True,
+        )
+        lines.append("─" * 53)
+        lines.append(
+            f"STALE / UNCLOSED SESSIONS (no close event, last turn "
+            f">{ self._staleness_window_minutes} min ago)"
+        )
+        lines.append("─" * 53)
+        if not stale_top:
+            lines.append("  (none)")
+        else:
+            for s in stale_top:
                 lines.extend(self._format_session_block(s, sub_sessions, now, indent=""))
         lines.append("")
 
@@ -359,7 +434,7 @@ class UsageReportGenerator:
                 growth = self._context_growth_pct(s.prompt_tokens_per_turn) or 0.0
                 first_tok = self._fmt_tokens(s.prompt_tokens_per_turn[0])
                 last_tok = self._fmt_tokens(s.prompt_tokens_per_turn[-1])
-                status = "active" if s.is_active else f"closed {self._fmt_time(s.last_turn_at)}"
+                status = s.session_status
                 lines.append(f"  {i}. {s.session_key} ({status})")
                 lines.append(
                     f"     Prompt tokens: {first_tok} → {last_tok} | "
@@ -385,11 +460,12 @@ class UsageReportGenerator:
         growth = self._context_growth_pct(s.prompt_tokens_per_turn)
         model_str = ", ".join(s.models_used) if s.models_used else "unknown"
         last_rel = self._relative_time(s.last_turn_at, now)
-        status_suffix = (
-            f" | Last active: {self._fmt_time(s.last_turn_at)} ({last_rel})"
-            if s.is_active
-            else f" | Closed: {self._fmt_time(s.last_turn_at)}"
-        )
+        if s.session_status == "active":
+            status_suffix = f" | Last active: {self._fmt_time(s.last_turn_at)} ({last_rel})"
+        elif s.session_status == "closed":
+            status_suffix = f" | Closed: {self._fmt_time(s.last_turn_at)}"
+        else:
+            status_suffix = f" | Stale/unclosed: {self._fmt_time(s.last_turn_at)} ({last_rel})"
 
         lines.append("")
         lines.append(f"{indent}  {s.session_key} | Channel: {s.channel} | Model: {model_str}")
@@ -419,7 +495,7 @@ class UsageReportGenerator:
         elif (
             growth is not None and growth > self._context_growth_warning_pct * 0.5 and s.turns >= 3
         ):
-            # Moderate growth note (>50% of warning threshold) — show in closed sessions
+            # Moderate growth note (>50% of warning threshold) — show in non-active sessions
             lines.append(
                 f"{indent}  Prompt tokens per turn: "
                 + " → ".join(self._fmt_tokens(t) for t in s.prompt_tokens_per_turn)

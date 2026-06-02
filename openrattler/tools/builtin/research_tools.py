@@ -30,6 +30,7 @@ from openrattler.storage.audit import AuditLog
 if TYPE_CHECKING:
     from openrattler.agents.creator import AgentCreator
     from openrattler.models.agents import AgentConfig
+    from openrattler.storage.session_lifecycle import SessionLifecycleStore
     from openrattler.storage.usage import UsageStore
     from openrattler.tools.registry import ToolRegistry
 
@@ -38,11 +39,20 @@ logger = logging.getLogger(__name__)
 # Module-level UsageStore — set by configure_usage_store() at startup.
 _usage_store: Optional["UsageStore"] = None
 
+# Module-level SessionLifecycleStore — set by configure_lifecycle_store() at startup.
+_lifecycle_store: Optional["SessionLifecycleStore"] = None
+
 
 def configure_usage_store(store: Optional["UsageStore"]) -> None:
     """Wire the shared UsageStore into this module so research turns are recorded."""
     global _usage_store
     _usage_store = store
+
+
+def configure_lifecycle_store(store: Optional["SessionLifecycleStore"]) -> None:
+    """Wire the shared SessionLifecycleStore so research sessions emit lifecycle events."""
+    global _lifecycle_store
+    _lifecycle_store = store
 
 
 class ResearchTools:
@@ -160,6 +170,7 @@ class ResearchTools:
                 self._audit,
                 usage_store=_usage_store,
                 parent_session_key=parent_session_key,
+                lifecycle_store=_lifecycle_store,
             )
         except Exception as exc:
             logger.error("research_query: failed to spawn ResearchAgent: %s", exc)

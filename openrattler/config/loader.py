@@ -999,6 +999,14 @@ class UsageReportConfig(BaseModel):
             "None → uses default_to_address from the email channel config."
         ),
     )
+    staleness_window_minutes: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Minutes since last TurnRecord before a session with no close event "
+            "is classified as stale_unclosed rather than active.  Default 30."
+        ),
+    )
 
 
 class AppConfig(BaseModel):

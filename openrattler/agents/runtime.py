@@ -177,7 +177,9 @@ class AgentRuntime:
             tools_arg = tool_defs if tool_defs else None
 
             # Diagnostic: log prompt component breakdown before first LLM call
-            _diag_sys = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
+            _diag_sys = (
+                messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
+            )
             _diag_hist = [m for m in messages if m.get("role") in ("user", "assistant")]
             _diag_tools_json = json.dumps(tools_arg) if tools_arg else ""
             logger.info(
@@ -186,12 +188,14 @@ class AgentRuntime:
                 " | tools=%d defs %d chars (~%d tok)"
                 " | user_msg=%d chars",
                 session_key,
-                len(_diag_sys), len(_diag_sys) // 4,
+                len(_diag_sys),
+                len(_diag_sys) // 4,
                 len(_diag_hist),
                 sum(len(m.get("content", "")) for m in _diag_hist),
                 sum(len(m.get("content", "")) for m in _diag_hist) // 4,
                 len(tools_arg) if tools_arg else 0,
-                len(_diag_tools_json), len(_diag_tools_json) // 4,
+                len(_diag_tools_json),
+                len(_diag_tools_json) // 4,
                 len(user_message.params.get("content", "")),
             )
 
