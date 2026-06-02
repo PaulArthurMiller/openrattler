@@ -133,6 +133,7 @@ class AgentRuntime:
         self,
         session: Session,
         user_message: UniversalMessage,
+        tool_allowlist: Optional[list[str]] = None,
     ) -> UniversalMessage:
         """Process one user turn and return the assistant's response.
 
@@ -173,7 +174,7 @@ class AgentRuntime:
 
             # 2. Build initial LLM input
             messages = self._build_messages(session)
-            tool_defs = self._build_tool_defs()
+            tool_defs = self._build_tool_defs(allowed=tool_allowlist)
             tools_arg = tool_defs if tool_defs else None
 
             # Diagnostic: log prompt component breakdown before first LLM call
@@ -447,13 +448,20 @@ class AgentRuntime:
 
         return messages
 
-    def _build_tool_defs(self) -> list[dict[str, Any]]:
-        """Return the agent's permitted tools in OpenAI function-calling format."""
+    def _build_tool_defs(self, allowed: Optional[list[str]] = None) -> list[dict[str, Any]]:
+        """Return the agent's permitted tools in OpenAI function-calling format.
+
+        When ``allowed`` is a non-empty list, only tools whose names appear in
+        that list are included.  This filters what the LLM sees in the ``tools``
+        API parameter — it does NOT change what ``ToolExecutor`` is permitted to
+        run.  The execution permission layer is unchanged.
+        """
         # Access the registry via the executor to avoid exposing it as a separate
         # constructor parameter — ToolExecutor already holds a reference to it.
-        permitted: list[ToolDefinition] = self._tool_executor._registry.list_tools_for_agent(
-            self._config
+        config = (
+            self._config.model_copy(update={"allowed_tools": allowed}) if allowed else self._config
         )
+        permitted: list[ToolDefinition] = self._tool_executor._registry.list_tools_for_agent(config)
         return [
             {
                 "type": "function",

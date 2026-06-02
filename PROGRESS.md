@@ -19,6 +19,26 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-02 — Piece 46.2 Heartbeat Tool Allowlist ✅
+
+**Branch:** `milestone-46.2-heartbeat-tool-allowlist` | **PR:** pending
+
+Wired a per-heartbeat tool allowlist so the LLM API only sees the small set of tools the heartbeat agent actually uses, slashing tool-definition token overhead per cycle.
+
+**Files modified:**
+- `openrattler/config/loader.py` — `tool_allowlist: list[str]` field added to `HeartbeatConfig` (default empty = no restriction); stored in description
+- `openrattler/agents/runtime.py` — `process_message()` gains `tool_allowlist: Optional[list[str]] = None` param; `_build_tool_defs()` gains `allowed: Optional[list[str]] = None`; when `allowed` is set, creates a filtered config copy so only the listed tools appear in the LLM `tools` parameter (execution permissions unchanged)
+- `openrattler/processors/heartbeat.py` — `self._tool_allowlist` stored from config in `__init__`; passed as `tool_allowlist=` kwarg to `runtime.process_message()` each cycle; empty list converts to `None` (no restriction)
+- `tests/test_agents/test_runtime.py` — 4 new `TestToolAllowlist` tests: no-allowlist sends all permitted, allowlist restricts to listed tool, executor permissions unaffected by allowlist, empty list treated as no restriction
+- `tests/test_processors/test_heartbeat.py` — mock updated to accept `**kwargs`; 4 new `TestHeartbeatToolAllowlist` tests + `_make_processor_with_config()` helper
+- `tests/test_config/test_loader.py` — 4 new `TestHeartbeatConfig` tests: default empty list, non-empty list accepted, round-trip with values, round-trip with empty
+
+**Tests:** 12 new, 2534 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR, then build Piece 46.3 (Remove duplicate tool descriptions from context block).
+
+---
+
 ## /build 2026-06-02 — Piece 46.1 Session Lifecycle Instrumentation ✅
 
 **Branch:** `milestone-46.1-session-lifecycle-instrumentation` | **PR:** pending
