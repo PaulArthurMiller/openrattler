@@ -19,6 +19,24 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-02 — Piece 46.5 MEMORY.md Periodic Consolidation ✅
+
+**Branch:** `milestone-46.5-memory-consolidation` | **PR:** pending
+
+Added the `consolidate_memory_history` tool that compresses MEMORY.md entries older than a configurable window into weekly summaries, routing the result through `update_memory_narrative` (replace mode) so MemorySecurityAgent reviews it before any write touches disk.
+
+**Files modified:**
+- `openrattler/tools/builtin/memory_tools.py` — added module-level helpers `_extract_section_date` and `_split_sections`; added `consolidate_memory_history` tool registration in `NarrativeMemoryTools.register_all()`; added `_consolidate_memory_history` handler (reads MEMORY.md, groups entries older than `days_to_keep` by ISO week, builds week-summary headings, routes consolidated content through `_update_memory_narrative(mode="replace", ...)`); added imports: `re`, `defaultdict`, `datetime`, `timedelta`, `timezone`
+- `openrattler/config/loader.py` — added `consolidation_days_to_keep: int = Field(default=7, ge=1, ...)` to `HeartbeatConfig`
+- `tests/test_tools/test_memory_tools.py` — added `TestExtractSectionDate` (4 tests), `TestSplitSections` (5 tests), `TestConsolidateMemoryHistory` (11 tests); added `datetime`/`timedelta`/`timezone` imports and helper exports
+- `tests/test_config/test_loader.py` — added 4 `TestHeartbeatConfig` tests for `consolidation_days_to_keep`
+
+**Tests:** 24 new, 2581 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR — the 46.x Token Economy Optimization series is complete.
+
+---
+
 ## /build 2026-06-02 — Piece 46.4 Memory Update History Scoping ✅
 
 **Branch:** `milestone-46.4-memory-update-history-scoping` | **PR:** pending

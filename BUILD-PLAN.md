@@ -3827,10 +3827,10 @@ Caching the full 47-tool registry before 46.2 would waste cache capacity on defi
 
 ## Status
 
-Current milestone: **46.5** — MEMORY.md periodic consolidation (lower priority)
+Current milestone: **complete** — all 46.x pieces done
 Piece 46.1: ✅ complete — PR merged
 Piece 46.2: ✅ complete — PR open
 Piece 46.3: ✅ complete — PR open
 Piece 46.4: ✅ complete — PR open
-Piece 46.5: 🔲 not started — MEMORY.md periodic consolidation (lower priority)
+Piece 46.5: ✅ complete — PR open
 Last updated: 2026-06-02
