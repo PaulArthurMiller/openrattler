@@ -276,6 +276,68 @@ class BudgetConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# ImageAttachmentConfig
+# ---------------------------------------------------------------------------
+
+
+class ImageAttachmentConfig(BaseModel):
+    """Per-channel image attachment gate configuration.
+
+    Controls which senders can send images, what media types are accepted,
+    size limits, and per-sender hourly rate limits.  Defaults to disabled —
+    a channel must explicitly set ``enabled=True`` to accept any images.
+
+    Security notes:
+    - ``enabled=False`` silently strips images with no user-facing message.
+    - ``sender_allowlist`` is a separate allowlist from the main message
+      sender allowlist — a sender can be trusted for text while still being
+      blocked from sending images.
+    - ``max_per_hour`` is enforced per sender, not per channel, to prevent
+      a single sender from exhausting the rate limit for others.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether image attachments are accepted on this channel.",
+    )
+    sender_allowlist: list[str] = Field(
+        default_factory=list,
+        description="Sender IDs allowed to send images (subset of channel sender_allowlist).",
+    )
+    max_size_bytes: int = Field(
+        default=10_485_760,
+        gt=0,
+        description="Maximum file size in bytes (default 10 MB).",
+    )
+    max_per_hour: int = Field(
+        default=5,
+        gt=0,
+        description="Maximum images per sender per hour.",
+    )
+    permitted_media_types: list[str] = Field(
+        default_factory=lambda: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+        description="MIME types accepted by the gate.",
+    )
+
+
+def parse_image_attachment_config(settings: dict[str, Any]) -> ImageAttachmentConfig:
+    """Extract and validate the ``image_attachments`` block from a channel settings dict.
+
+    Returns an ``ImageAttachmentConfig`` with all defaults applied when the key
+    is absent.  This keeps ``ChannelConfig.settings`` as a generic dict while
+    still giving typed, validated image attachment config at the call site.
+
+    Args:
+        settings: The ``ChannelConfig.settings`` dict for one channel.
+
+    Returns:
+        A validated ``ImageAttachmentConfig`` (defaults to ``enabled=False``).
+    """
+    raw = settings.get("image_attachments", {})
+    return ImageAttachmentConfig(**(raw if isinstance(raw, dict) else {}))
+
+
+# ---------------------------------------------------------------------------
 # ChannelConfig
 # ---------------------------------------------------------------------------
 

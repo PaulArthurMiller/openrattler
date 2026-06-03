@@ -663,3 +663,137 @@ class TestUniversalMessageFields:
             msg = await adapter.receive()
         assert msg.metadata["message_ts"] == _TEST_TS
         await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Image attachment gate integration (Sub-step 3)
+# ---------------------------------------------------------------------------
+
+
+def _make_slack_msg_with_files(
+    user: str = _ALLOWED_USER_ID,
+    text: str = "Check this out",
+    ts: str = "9999999999.000001",
+    files: list[dict] | None = None,
+) -> dict[str, Any]:
+    msg = _make_slack_msg(user=user, text=text, ts=ts)
+    if files is not None:
+        msg["files"] = files
+    return msg
+
+
+def _make_slack_file(
+    mimetype: str = "image/jpeg",
+    size: int = 1024,
+    url_private: str = "https://files.slack.com/files-pri/T01/F01/image.jpg",
+) -> dict[str, Any]:
+    return {
+        "mimetype": mimetype,
+        "size": size,
+        "url_private": url_private,
+    }
+
+
+_JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+
+
+class TestSlackAdapterImageAttachments:
+    def _make_image_adapter(
+        self,
+        image_allowlist: list[str] | None = None,
+        enabled: bool = True,
+    ) -> SlackAdapter:
+        extra: dict[str, Any] = {}
+        if enabled:
+            extra["image_attachments"] = {
+                "enabled": True,
+                "sender_allowlist": image_allowlist or [_ALLOWED_USER_ID],
+                "max_size_bytes": 10_485_760,
+                "max_per_hour": 5,
+            }
+        return _make_adapter(extra_settings=extra if enabled else None)
+
+    async def _receive_with_mock_download(
+        self,
+        adapter: SlackAdapter,
+        msg_dict: dict[str, Any],
+        raw_bytes: bytes = _JPEG_BYTES,
+    ) -> UniversalMessage:
+        mock_resp = AsyncMock()
+        mock_resp.read = AsyncMock(return_value=raw_bytes)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        mock_session.closed = False
+
+        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+            await adapter.connect()
+            adapter._session = mock_session
+            msg = await adapter.receive()
+        await adapter.disconnect()
+        return msg
+
+    async def test_valid_image_produces_attachment_and_unchanged_text(self) -> None:
+        adapter = self._make_image_adapter()
+        msg_dict = _make_slack_msg_with_files(files=[_make_slack_file()])
+        msg = await self._receive_with_mock_download(adapter, msg_dict)
+        assert len(msg.attachments) == 1
+        assert msg.attachments[0].media_type == "image/jpeg"
+        assert msg.params["content"] == msg_dict["text"]
+        print("[OK] valid image produces attachment, text unchanged")
+
+    async def test_text_only_message_has_no_attachments(self) -> None:
+        adapter = self._make_image_adapter()
+        msg_dict = _make_slack_msg(text="plain text, no files")
+        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+            await adapter.connect()
+            msg = await adapter.receive()
+        await adapter.disconnect()
+        assert msg.attachments == []
+        print("[OK] text-only message has no attachments (regression)")
+
+    async def test_disabled_channel_strips_image_silently(self) -> None:
+        adapter = _make_adapter()  # no image_attachments key -> enabled=False
+        msg_dict = _make_slack_msg_with_files(files=[_make_slack_file()])
+        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+            await adapter.connect()
+            msg = await adapter.receive()
+        await adapter.disconnect()
+        assert msg.attachments == []
+        assert "[Image not accepted" not in msg.params.get("content", "")
+        print("[OK] disabled channel strips image silently")
+
+    async def test_sender_not_in_image_allowlist_appends_rejection_note(self) -> None:
+        adapter = self._make_image_adapter(image_allowlist=["U_OTHER_ONLY"])
+        msg_dict = _make_slack_msg_with_files(files=[_make_slack_file()])
+        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+            await adapter.connect()
+            msg = await adapter.receive()
+        await adapter.disconnect()
+        assert msg.attachments == []
+        assert "[Image not accepted" in msg.params.get("content", "")
+        print("[OK] non-allowlisted sender gets rejection note in text")
+
+    async def test_disallowed_media_type_appends_rejection_note(self) -> None:
+        adapter = self._make_image_adapter()
+        msg_dict = _make_slack_msg_with_files(files=[_make_slack_file(mimetype="image/tiff")])
+        with patch.object(adapter, "_fetch_new_messages", new=AsyncMock(return_value=[msg_dict])):
+            await adapter.connect()
+            msg = await adapter.receive()
+        await adapter.disconnect()
+        assert msg.attachments == []
+        assert "[Image not accepted" in msg.params.get("content", "")
+        print("[OK] disallowed MIME type gets rejection note")
+
+    async def test_multiple_files_one_pass_one_reject(self) -> None:
+        adapter = self._make_image_adapter(image_allowlist=[_ALLOWED_USER_ID])
+        jpeg_file = _make_slack_file(mimetype="image/jpeg", url_private="https://slack.com/f1")
+        tiff_file = _make_slack_file(mimetype="image/tiff", url_private="https://slack.com/f2")
+        msg_dict = _make_slack_msg_with_files(files=[jpeg_file, tiff_file])
+        msg = await self._receive_with_mock_download(adapter, msg_dict)
+        assert len(msg.attachments) == 1
+        assert msg.attachments[0].media_type == "image/jpeg"
+        assert "[Image not accepted" in msg.params.get("content", "")
+        print("[OK] multiple files: one pass + one reject")

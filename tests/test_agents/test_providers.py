@@ -486,3 +486,46 @@ class TestConvertTools:
             original = name_map.get(api_tool["name"], api_tool["name"])
             # All original names should be resolvable
             assert original in {"normal_tool", "mcp:srv.tool_a", "mcp:srv.tool_b"}
+
+
+# ---------------------------------------------------------------------------
+# _convert_messages — list user content for image attachments (Sub-step 4)
+# ---------------------------------------------------------------------------
+
+
+class TestConvertMessagesListContent:
+    def test_user_string_content_passes_through(self) -> None:
+        messages = [{"role": "user", "content": "plain text message"}]
+        _, converted = _convert_messages(messages)
+        assert len(converted) == 1
+        assert converted[0]["role"] == "user"
+        assert converted[0]["content"] == "plain text message"
+        print("[OK] user string content passes through unchanged")
+
+    def test_user_list_content_passes_through(self) -> None:
+        content_blocks = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"},
+            },
+            {"type": "text", "text": "[Channel: slack]\nHello"},
+        ]
+        messages = [{"role": "user", "content": content_blocks}]
+        _, converted = _convert_messages(messages)
+        assert len(converted) == 1
+        assert converted[0]["role"] == "user"
+        assert converted[0]["content"] == content_blocks
+        print("[OK] user list content passes through unchanged")
+
+    def test_list_content_type_preserved_as_list(self) -> None:
+        content_blocks = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "xyz"},
+            },
+            {"type": "text", "text": "look at this"},
+        ]
+        messages = [{"role": "user", "content": content_blocks}]
+        _, converted = _convert_messages(messages)
+        assert isinstance(converted[0]["content"], list)
+        print("[OK] list content type is preserved as list (not coerced to string)")

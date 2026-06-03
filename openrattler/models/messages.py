@@ -16,6 +16,36 @@ from pydantic import BaseModel, Field
 from openrattler.models.errors import ErrorCode
 
 # ---------------------------------------------------------------------------
+# MessageAttachment
+# ---------------------------------------------------------------------------
+
+
+class MessageAttachment(BaseModel):
+    """A verified image attachment carried by a UniversalMessage.
+
+    Populated only after the image passes all ImageAttachmentGate checks.
+    Carries the base64-encoded bytes, a SHA-256 provenance hash for audit
+    correlation, and enough metadata to reconstruct the audit trail.
+
+    Security notes:
+    - ``data`` is base64-encoded raw bytes; decode with ``base64.b64decode``.
+    - ``sha256`` is hex-encoded; use it to correlate with the audit log entry
+      that recorded the image (event ``image_received``, field ``sha256``).
+    - ``declared_by_sender`` is the sender's claimed Slack/channel identity,
+      already validated by the sender allowlist before this attachment was built.
+    """
+
+    attachment_id: str = Field(description="Unique attachment identifier (UUID)")
+    media_type: str = Field(description="MIME type (e.g. 'image/jpeg')")
+    data: str = Field(description="Base64-encoded raw image bytes")
+    size_bytes: int = Field(description="Raw file size in bytes")
+    sha256: str = Field(description="Hex SHA-256 digest of the raw bytes")
+    origin_channel: str = Field(description="Channel the attachment arrived on (e.g. 'slack')")
+    declared_by_sender: str = Field(description="Sender ID as declared by the channel")
+    received_at: datetime = Field(description="UTC timestamp when the attachment was received")
+
+
+# ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
 
@@ -89,6 +119,12 @@ class UniversalMessage(BaseModel):
         description="Error details when type='error'",
     )
 
+    # === Attachments ===
+    attachments: list[MessageAttachment] = Field(
+        default_factory=list,
+        description="Verified image attachments that passed the ImageAttachmentGate",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers
@@ -110,11 +146,17 @@ def create_message(
     trace_id: Optional[str] = None,
     parent_message_id: Optional[str] = None,
     error: Optional[dict[str, Any]] = None,
+    attachments: Optional[list[MessageAttachment]] = None,
 ) -> UniversalMessage:
     """Create a new UniversalMessage with an auto-generated message_id and timestamp.
 
     ``trace_id`` is auto-generated as a new UUID if not supplied, which starts
     a fresh trace.  Pass an existing ``trace_id`` to continue an in-flight trace.
+
+    ``attachments`` carries verified image attachments that passed the
+    ImageAttachmentGate.  Only ``create_message`` propagates attachments;
+    ``create_response`` and ``create_error`` do not — agent responses carry no
+    image data.
 
     Security notes:
     - The caller is responsible for setting an accurate ``trust_level``; it will
@@ -136,6 +178,7 @@ def create_message(
         parent_message_id=parent_message_id,
         trace_id=trace_id if trace_id is not None else str(uuid.uuid4()),
         error=error,
+        attachments=attachments if attachments is not None else [],
     )
 
 
