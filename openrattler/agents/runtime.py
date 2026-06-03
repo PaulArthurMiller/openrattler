@@ -429,6 +429,12 @@ class AgentRuntime:
         Only ``request`` (user) and ``response`` (assistant) messages from the
         transcript are included; tool-loop messages are ephemeral and live only
         in the in-memory list built during a single turn.
+
+        When a request message carries verified image attachments, the user
+        content is emitted as an Anthropic-format list of content blocks —
+        image blocks first (Anthropic's recommended order), then a text block
+        containing the provenance note and user text.  Text-only messages use
+        the plain string form so token overhead is zero for the common case.
         """
         messages: list[dict[str, Any]] = []
 
@@ -437,11 +443,34 @@ class AgentRuntime:
 
         for msg in session.history:
             if msg.type == "request":
-                content = msg.params.get("content", "")
-                # Prefix with originating channel so the agent knows how to format its reply.
-                if msg.channel:
-                    content = f"[Channel: {msg.channel}]\n{content}"
-                messages.append({"role": "user", "content": content})
+                text = str(msg.params.get("content", ""))
+                if msg.attachments:
+                    # Inject the standing provenance note so the agent knows
+                    # these images came from a verified, trusted sender.
+                    note = "[Verified image — submitted by trusted sender via trusted channel]\n"
+                    full_text = (
+                        f"[Channel: {msg.channel}]\n{note}{text}"
+                        if msg.channel
+                        else f"{note}{text}"
+                    )
+                    content_blocks: list[dict[str, Any]] = [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": att.media_type,
+                                "data": att.data,
+                            },
+                        }
+                        for att in msg.attachments
+                    ]
+                    content_blocks.append({"type": "text", "text": full_text})
+                    messages.append({"role": "user", "content": content_blocks})
+                else:
+                    # Text-only path — plain string content, no token overhead.
+                    if msg.channel:
+                        text = f"[Channel: {msg.channel}]\n{text}"
+                    messages.append({"role": "user", "content": text})
             elif msg.type == "response":
                 messages.append({"role": "assistant", "content": msg.params.get("content", "")})
             # Other types (error, event) are not forwarded to the LLM.

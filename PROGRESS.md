@@ -19,6 +19,33 @@ stopping points — this is now noted in MEMORY.md.
 
 ---
 
+## /build 2026-06-03 — Piece 47.1 Image Attachments, Option A ✅
+
+**Branch:** `build/image-attachments-option-a` | **PR:** pending
+
+Built channel-gated image attachment support end-to-end: security gate, model layer, Slack adapter extraction, and runtime multi-part content blocks.
+
+**Files created:**
+- `openrattler/security/image_gate.py` — `ImageAttachmentGate`: 5-check ordered gate (`enabled`, sender allowlist, media type, size, hourly rate limit); `check_metadata()` runs all checks on Slack metadata before any download; `build_attachment()` takes raw bytes, computes SHA-256, base64-encodes, builds `MessageAttachment`; `enabled` property lets the adapter skip file loop entirely when disabled; all events audit-logged
+- `tests/test_security/test_image_gate.py` — 19 tests covering all 5 rejection conditions, each audit event, `build_attachment` sha256/base64/uniqueness, rate limit boundary (5th passes, 6th rejected), per-sender independence
+
+**Files modified:**
+- `openrattler/models/messages.py` — new `MessageAttachment(BaseModel)` with 8 fields; `attachments: list[MessageAttachment]` added to `UniversalMessage`; `create_message()` gains optional `attachments` param; `create_response()` and `create_error()` do not propagate attachments
+- `openrattler/config/loader.py` — new `ImageAttachmentConfig(BaseModel)` with `enabled/sender_allowlist/max_size_bytes/max_per_hour/permitted_media_types`; new `parse_image_attachment_config(settings)` module-level helper
+- `openrattler/channels/slack_adapter.py` — `__init__` parses `ImageAttachmentConfig` and creates `ImageAttachmentGate`; `_build_universal_message()` extracts `files[]` from Slack events, runs gate checks, downloads on pass, appends rejection notes to text on fail; disabled gate skips file loop entirely (silent)
+- `openrattler/agents/runtime.py` — `_build_messages()` emits Anthropic-format list content blocks when `msg.attachments` is non-empty: image blocks first (Anthropic recommended order), then text block with standing provenance note + channel prefix; text-only path unchanged
+- `tests/test_models/test_messages.py` — `TestMessageAttachment` (3 tests: round-trip, JSON round-trip, required fields); `TestUniversalMessageAttachments` (6 tests: default empty, with/multiple attachments, create_response/create_error do not propagate, round-trip)
+- `tests/test_config/test_loader.py` — `TestImageAttachmentConfig` (6 tests: defaults, validation); `TestParseImageAttachmentConfig` (4 tests: empty/absent key/full/partial)
+- `tests/test_channels/test_slack_adapter.py` — 6 new `TestSlackAdapterImageAttachments` tests: valid image, text-only regression, disabled silent, non-allowlisted sender rejection, disallowed MIME type rejection, multiple files one-pass-one-reject
+- `tests/test_agents/test_runtime.py` — 8 new `TestBuildMessagesWithAttachments` tests: string content (regression), list content, image-before-text order, base64 source fields, two attachments, standing note, no-note regression, channel prefix
+- `tests/test_agents/test_providers.py` — 3 new `TestConvertMessagesListContent` tests: string pass-through (regression), list pass-through, list type preserved
+
+**Tests:** 55 new, 2636 total — all passing. mypy + black clean.
+
+**Next step:** Merge PR.
+
+---
+
 ## /build 2026-06-02 — Piece 46.5 MEMORY.md Periodic Consolidation ✅
 
 **Branch:** `milestone-46.5-memory-consolidation` | **PR:** pending

@@ -50,10 +50,11 @@ import aiohttp
 from aiohttp import ClientTimeout
 
 from openrattler.channels.base import ChannelAdapter
-from openrattler.config.loader import ChannelConfig
+from openrattler.config.loader import ChannelConfig, parse_image_attachment_config
 from openrattler.models.audit import AuditEvent
-from openrattler.models.messages import UniversalMessage, create_message
+from openrattler.models.messages import MessageAttachment, UniversalMessage, create_message
 from openrattler.security.action_levels import ACTION_LEVEL_DESCRIPTIONS
+from openrattler.security.image_gate import ImageAttachmentGate
 from openrattler.security.patterns import scan_for_suspicious_content
 from openrattler.security.rate_limiter import RateLimiter
 from openrattler.storage.audit import AuditLog
@@ -153,6 +154,11 @@ class SlackAdapter(ChannelAdapter):
             max_per_hour=_DEFAULT_RATE_MAX_PER_HOUR,
         )
         self._audit: Optional[AuditLog] = audit
+
+        image_config = parse_image_attachment_config(settings)
+        self._image_gate: ImageAttachmentGate = ImageAttachmentGate(
+            config=image_config, audit=audit
+        )
 
     # ------------------------------------------------------------------
     # ChannelAdapter identity
@@ -395,7 +401,7 @@ class SlackAdapter(ChannelAdapter):
         """Build a UniversalMessage from a Slack message dict.
 
         Applies allowlist check, marks ts as seen, rate limit check, content
-        scan, then constructs the UniversalMessage.
+        scan, image attachment gate, then constructs the UniversalMessage.
 
         Args:
             msg_dict: Slack message JSON dict with ``user``/``bot_id``, ``ts``, ``text``.
@@ -446,6 +452,45 @@ class SlackAdapter(ChannelAdapter):
                 details={"matches": hits},
             )
 
+        # --- Image attachment gate ---
+        attachments: list[MessageAttachment] = []
+        rejection_notes: list[str] = []
+
+        for file_info in msg_dict.get("files", []) if self._image_gate.enabled else []:
+            content_type = str(file_info.get("mimetype", ""))
+            size_bytes = int(file_info.get("size", 0))
+
+            rejection = await self._image_gate.check_metadata(
+                sender_id, "slack", content_type, size_bytes
+            )
+            if rejection is not None:
+                # rejection is None for disabled-channel case (silent) or a reason string.
+                rejection_notes.append(rejection)
+                continue
+
+            # All gate checks passed — download and build the attachment.
+            url_private = str(file_info.get("url_private", ""))
+            if url_private and self._session is not None:
+                try:
+                    async with self._session.get(url_private) as resp:
+                        raw_bytes = await resp.read()
+                    att = await self._image_gate.build_attachment(
+                        sender_id, "slack", content_type, raw_bytes
+                    )
+                    attachments.append(att)
+                except Exception as exc:
+                    await self._audit_log(
+                        "image_download_failed",
+                        session_key=session_key,
+                        details={"error": type(exc).__name__, "url_present": bool(url_private)},
+                    )
+                    rejection_notes.append("Your image was not accepted: download failed.")
+
+        # Append rejection notes to the text so the sender gets feedback.
+        # Disabled-channel silences are never in rejection_notes (check_metadata returns None).
+        if rejection_notes:
+            text = text + "\n" + "\n".join(f"[Image not accepted: {n}]" for n in rejection_notes)
+
         return create_message(
             from_agent="channel:slack",
             to_agent=f"agent:{self._agent_id}:main",
@@ -461,6 +506,7 @@ class SlackAdapter(ChannelAdapter):
             metadata={
                 "message_ts": ts,
             },
+            attachments=attachments if attachments else None,
         )
 
     async def _audit_log(

@@ -10,11 +10,31 @@ from pydantic import ValidationError
 
 from openrattler.models.errors import ErrorCode
 from openrattler.models.messages import (
+    MessageAttachment,
     UniversalMessage,
     create_error,
     create_message,
     create_response,
 )
+
+# ---------------------------------------------------------------------------
+# MessageAttachment helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_attachment(**overrides: object) -> MessageAttachment:
+    defaults: dict = dict(
+        attachment_id="att-1",
+        media_type="image/jpeg",
+        data="abc123base64",
+        size_bytes=1024,
+        sha256="deadbeef" * 8,
+        origin_channel="slack",
+        declared_by_sender="U123456",
+        received_at=datetime.now(timezone.utc),
+    )
+    return MessageAttachment(**{**defaults, **overrides})
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -415,3 +435,83 @@ class TestRoundTrip:
         assert restored.type == "error"
         assert restored.error is not None
         assert restored.error["code"] == "RATE_LIMIT_EXCEEDED"
+
+
+# ---------------------------------------------------------------------------
+# MessageAttachment
+# ---------------------------------------------------------------------------
+
+
+class TestMessageAttachment:
+    def test_round_trip(self) -> None:
+        att = _make_attachment()
+        restored = MessageAttachment(**att.model_dump())
+        assert restored == att
+
+    def test_json_round_trip(self) -> None:
+        att = _make_attachment()
+        restored = MessageAttachment.model_validate_json(att.model_dump_json())
+        assert restored == att
+
+    def test_required_fields_present(self) -> None:
+        att = _make_attachment()
+        assert att.attachment_id == "att-1"
+        assert att.media_type == "image/jpeg"
+        assert att.data == "abc123base64"
+        assert att.size_bytes == 1024
+        assert att.sha256 == "deadbeef" * 8
+        assert att.origin_channel == "slack"
+        assert att.declared_by_sender == "U123456"
+        assert att.received_at.tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# UniversalMessage attachments field
+# ---------------------------------------------------------------------------
+
+
+class TestUniversalMessageAttachments:
+    def test_default_attachments_is_empty(self) -> None:
+        msg = _make_message()
+        assert msg.attachments == []
+
+    def test_create_message_with_attachments(self) -> None:
+        att = _make_attachment()
+        msg = create_message(
+            **_BASE_KWARGS,
+            attachments=[att],
+        )
+        assert len(msg.attachments) == 1
+        assert msg.attachments[0].attachment_id == "att-1"
+
+    def test_create_message_with_multiple_attachments(self) -> None:
+        att1 = _make_attachment(attachment_id="att-1")
+        att2 = _make_attachment(attachment_id="att-2", media_type="image/png")
+        msg = create_message(**_BASE_KWARGS, attachments=[att1, att2])
+        assert len(msg.attachments) == 2
+        assert msg.attachments[1].media_type == "image/png"
+
+    def test_create_response_does_not_propagate_attachments(self) -> None:
+        att = _make_attachment()
+        original = create_message(**_BASE_KWARGS, attachments=[att])
+        resp = create_response(original, from_agent="b", trust_level="main")
+        assert resp.attachments == []
+
+    def test_create_error_does_not_propagate_attachments(self) -> None:
+        att = _make_attachment()
+        original = create_message(**_BASE_KWARGS, attachments=[att])
+        err = create_error(
+            original,
+            from_agent="b",
+            trust_level="main",
+            code=ErrorCode.INTERNAL_ERROR,
+            message="err",
+        )
+        assert err.attachments == []
+
+    def test_universal_message_with_attachments_round_trip(self) -> None:
+        att = _make_attachment()
+        original = create_message(**_BASE_KWARGS, attachments=[att])
+        restored = UniversalMessage.model_validate(original.model_dump())
+        assert len(restored.attachments) == 1
+        assert restored.attachments[0] == att

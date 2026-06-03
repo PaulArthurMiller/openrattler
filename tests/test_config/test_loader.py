@@ -20,11 +20,13 @@ from openrattler.config.loader import (
     BudgetConfig,
     ChannelConfig,
     HeartbeatConfig,
+    ImageAttachmentConfig,
     MemoryConfig,
     SecurityConfig,
     ToolsConfig,
     UsageReportConfig,
     load_config,
+    parse_image_attachment_config,
     save_config,
 )
 
@@ -475,3 +477,87 @@ class TestUsageReportConfig:
         assert loaded.usage_report.report_window_hours == 48
         assert loaded.usage_report.recipient_email == "owner@example.com"
         print("[OK] UsageReportConfig round-trips correctly")
+
+
+# ---------------------------------------------------------------------------
+# ImageAttachmentConfig
+# ---------------------------------------------------------------------------
+
+
+class TestImageAttachmentConfig:
+    def test_defaults_to_disabled(self) -> None:
+        cfg = ImageAttachmentConfig()
+        assert cfg.enabled is False
+        print("[OK] ImageAttachmentConfig defaults to enabled=False")
+
+    def test_default_sender_allowlist_is_empty(self) -> None:
+        cfg = ImageAttachmentConfig()
+        assert cfg.sender_allowlist == []
+        print("[OK] ImageAttachmentConfig default sender_allowlist is empty")
+
+    def test_default_max_size_bytes(self) -> None:
+        cfg = ImageAttachmentConfig()
+        assert cfg.max_size_bytes == 10_485_760
+        print("[OK] ImageAttachmentConfig default max_size_bytes is 10 MB")
+
+    def test_default_permitted_media_types(self) -> None:
+        cfg = ImageAttachmentConfig()
+        assert set(cfg.permitted_media_types) == {
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+        }
+        print("[OK] ImageAttachmentConfig default permitted_media_types correct")
+
+    def test_max_size_bytes_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            ImageAttachmentConfig(max_size_bytes=0)
+        with pytest.raises(ValidationError):
+            ImageAttachmentConfig(max_size_bytes=-1)
+        print("[OK] ImageAttachmentConfig rejects non-positive max_size_bytes")
+
+    def test_max_per_hour_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            ImageAttachmentConfig(max_per_hour=0)
+        print("[OK] ImageAttachmentConfig rejects max_per_hour=0")
+
+
+class TestParseImageAttachmentConfig:
+    def test_empty_settings_returns_all_defaults(self) -> None:
+        cfg = parse_image_attachment_config({})
+        assert cfg.enabled is False
+        assert cfg.sender_allowlist == []
+        assert cfg.max_size_bytes == 10_485_760
+        print("[OK] parse_image_attachment_config with empty dict returns defaults")
+
+    def test_absent_key_returns_all_defaults(self) -> None:
+        cfg = parse_image_attachment_config({"bot_token": "xoxb-...", "channel_id": "C123"})
+        assert cfg.enabled is False
+        print("[OK] parse_image_attachment_config ignores unrelated keys")
+
+    def test_full_config_parsed(self) -> None:
+        cfg = parse_image_attachment_config(
+            {
+                "image_attachments": {
+                    "enabled": True,
+                    "sender_allowlist": ["U123", "U456"],
+                    "max_size_bytes": 5_242_880,
+                    "max_per_hour": 10,
+                    "permitted_media_types": ["image/jpeg"],
+                }
+            }
+        )
+        assert cfg.enabled is True
+        assert cfg.sender_allowlist == ["U123", "U456"]
+        assert cfg.max_size_bytes == 5_242_880
+        assert cfg.max_per_hour == 10
+        assert cfg.permitted_media_types == ["image/jpeg"]
+        print("[OK] parse_image_attachment_config parses full config")
+
+    def test_partial_config_uses_defaults_for_missing_fields(self) -> None:
+        cfg = parse_image_attachment_config({"image_attachments": {"enabled": True}})
+        assert cfg.enabled is True
+        assert cfg.sender_allowlist == []
+        assert cfg.max_size_bytes == 10_485_760
+        print("[OK] parse_image_attachment_config partial config uses defaults")

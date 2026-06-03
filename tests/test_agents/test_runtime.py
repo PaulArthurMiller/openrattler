@@ -11,7 +11,8 @@ import pytest
 from openrattler.agents.providers.base import LLMProvider, LLMResponse, TokenUsage
 from openrattler.agents.runtime import AgentRuntime, _MAX_TOOL_LOOPS
 from openrattler.models.agents import AgentConfig, TrustLevel
-from openrattler.models.messages import UniversalMessage, create_message
+from openrattler.models.messages import MessageAttachment, UniversalMessage, create_message
+from openrattler.models.sessions import Session
 from openrattler.models.tools import ToolCall, ToolDefinition
 from openrattler.storage.audit import AuditLog
 from openrattler.storage.memory import MemoryStore
@@ -706,3 +707,158 @@ class TestToolAllowlist:
         names = {t["function"]["name"] for t in tools_sent}
         print(f"[test] tools_sent_names={names}")
         assert "tool_alpha" in names
+
+
+# ---------------------------------------------------------------------------
+# _build_messages -- image attachment content blocks (Sub-step 4)
+# ---------------------------------------------------------------------------
+
+
+def _make_attachment_msg(content: str = "look at this", channel="slack"):
+    from openrattler.models.messages import MessageAttachment
+
+    att = MessageAttachment(
+        attachment_id="att-1",
+        media_type="image/jpeg",
+        data="abc123base64==",
+        size_bytes=100,
+        sha256="deadbeef" * 8,
+        origin_channel="slack",
+        declared_by_sender="U123",
+        received_at=datetime.now(timezone.utc),
+    )
+    return create_message(
+        from_agent="user",
+        to_agent=_SESSION,
+        session_key=_SESSION,
+        type="request",
+        operation="chat",
+        trust_level="main",
+        channel=channel,
+        params={"content": content},
+        attachments=[att],
+    )
+
+
+def _make_session_with_history(msgs):
+    from openrattler.models.sessions import Session
+
+    return Session(key=_SESSION, agent_id=_SESSION, history=msgs, system_prompt="")
+
+
+class TestBuildMessagesWithAttachments:
+    def test_text_only_produces_string_content(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _user_msg("hello world")
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        assert isinstance(user_msg["content"], str)
+        assert "hello world" in user_msg["content"]
+        print("[OK] text-only message produces string content")
+
+    def test_attachment_produces_list_content(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _make_attachment_msg()
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        assert isinstance(user_msg["content"], list)
+        print("[OK] message with attachment produces list content")
+
+    def test_image_block_comes_before_text_block(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _make_attachment_msg()
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        blocks = user_msg["content"]
+        assert isinstance(blocks, list)
+        assert blocks[0]["type"] == "image"
+        assert blocks[-1]["type"] == "text"
+        print("[OK] image block comes before text block")
+
+    def test_image_block_has_correct_base64_source(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _make_attachment_msg()
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        image_block = user_msg["content"][0]
+        assert image_block["source"]["type"] == "base64"
+        assert image_block["source"]["media_type"] == "image/jpeg"
+        assert image_block["source"]["data"] == "abc123base64=="
+        print("[OK] image block has correct base64 source fields")
+
+    def test_two_attachments_produce_two_image_blocks(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        att1 = MessageAttachment(
+            attachment_id="att-1",
+            media_type="image/jpeg",
+            data="data1==",
+            size_bytes=100,
+            sha256="a" * 64,
+            origin_channel="slack",
+            declared_by_sender="U1",
+            received_at=datetime.now(timezone.utc),
+        )
+        att2 = MessageAttachment(
+            attachment_id="att-2",
+            media_type="image/png",
+            data="data2==",
+            size_bytes=200,
+            sha256="b" * 64,
+            origin_channel="slack",
+            declared_by_sender="U1",
+            received_at=datetime.now(timezone.utc),
+        )
+        msg = create_message(
+            from_agent="user",
+            to_agent=_SESSION,
+            session_key=_SESSION,
+            type="request",
+            operation="chat",
+            trust_level="main",
+            params={"content": "two images"},
+            attachments=[att1, att2],
+        )
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        blocks = user_msg["content"]
+        image_blocks = [b for b in blocks if b["type"] == "image"]
+        text_blocks = [b for b in blocks if b["type"] == "text"]
+        assert len(image_blocks) == 2
+        assert len(text_blocks) == 1
+        print("[OK] two attachments produce two image blocks and one text block")
+
+    def test_standing_note_in_text_block_when_attachment(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _make_attachment_msg(content="here is my photo")
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        text_block = next(b for b in user_msg["content"] if b["type"] == "text")
+        assert "Verified image" in text_block["text"]
+        assert "here is my photo" in text_block["text"]
+        print("[OK] standing provenance note present in text block")
+
+    def test_no_standing_note_when_no_attachments(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _user_msg("just text")
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        assert isinstance(user_msg["content"], str)
+        assert "Verified image" not in user_msg["content"]
+        print("[OK] no provenance note when message has no attachments")
+
+    def test_channel_prefix_in_text_block_with_attachment(self, tmp_path):
+        runtime = _make_runtime(tmp_path, _mock_provider())
+        msg = _make_attachment_msg(content="hi", channel="slack")
+        session = _make_session_with_history([msg])
+        built = runtime._build_messages(session)
+        user_msg = next(m for m in built if m["role"] == "user")
+        text_block = next(b for b in user_msg["content"] if b["type"] == "text")
+        assert "[Channel: slack]" in text_block["text"]
+        print("[OK] channel prefix present in text block with attachment")
