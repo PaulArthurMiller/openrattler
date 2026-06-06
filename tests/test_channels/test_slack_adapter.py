@@ -406,6 +406,17 @@ class TestBotMessageFiltering:
         }
         assert adapter._is_valid_message(msg) is False
 
+    def test_file_share_subtype_accepted(self, adapter: SlackAdapter) -> None:
+        """subtype="file_share" with a user ID → accepted (file browser shares)."""
+        msg = {
+            "type": "message",
+            "subtype": "file_share",
+            "user": _ALLOWED_USER_ID,
+            "text": "shared a file",
+            "files": [{"mimetype": "image/png", "size": 1024, "url_private": "https://example.com/img.png"}],
+        }
+        assert adapter._is_valid_message(msg) is True
+
     async def test_allow_bot_messages_delivers_bot(self, audit: AuditLog) -> None:
         """allow_bot_messages=True, bot ID in allowlist → UniversalMessage returned."""
         config = _make_config(
