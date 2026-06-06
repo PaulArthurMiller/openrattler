@@ -283,7 +283,11 @@ class AgentRuntime:
                 )
 
         except Exception as exc:
-            # Unexpected error (provider failure, etc.) — return structured error
+            # Log the full traceback so the root cause is visible in the terminal.
+            logger.exception(
+                "process_message error session=%s op=%s", session_key, user_message.operation
+            )
+            # Return structured error so the channel loop can relay it to the user.
             assistant_msg = create_message(
                 from_agent=self._config.agent_id,
                 to_agent=user_message.from_agent,
