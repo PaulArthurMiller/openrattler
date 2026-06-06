@@ -373,13 +373,15 @@ class SlackAdapter(ChannelAdapter):
     def _is_valid_message(self, msg: dict[str, Any]) -> bool:
         """Determine whether a Slack message dict should be delivered.
 
-        Handles four cases:
+        Handles five cases:
         - Regular human message (``user`` present, no ``subtype``) → accepted.
+        - File-share message (``subtype == "file_share"``) → accepted; Slack
+          sends this subtype when a file is shared from the file browser.
         - Bot message (``bot_id`` present) → accepted only when
           ``allow_bot_messages=True``.
         - System events (``channel_join``, ``message_changed``, etc.) → always
           rejected.
-        - Human message with a subtype (edits, etc.) → rejected (safest default).
+        - Human message with any other subtype (edits, etc.) → rejected.
 
         Args:
             msg: Slack message dict from conversations.history.
@@ -389,8 +391,9 @@ class SlackAdapter(ChannelAdapter):
         """
         if msg.get("type") != "message":
             return False
-        # Human message: user field present, no subtype
-        if "user" in msg and "subtype" not in msg:
+        subtype = msg.get("subtype")
+        # Human message: no subtype, or file_share subtype (file browser share)
+        if "user" in msg and (subtype is None or subtype == "file_share"):
             return True
         # Bot message: only when configured
         if self._allow_bot_messages and "bot_id" in msg:
