@@ -1291,6 +1291,38 @@ async def build_application(
         )
 
         google_auth_manager = GoogleAuthManager(config.google)
+
+        # Startup credential probe — catch expired/revoked refresh tokens before the
+        # first tool call so the user gets a reauth prompt at launch, not mid-session.
+        # Silent access-token refresh still happens inside get_credentials(); this only
+        # fires when the refresh token itself is gone (invalid_grant / 7-day test-mode
+        # expiry).  On a remote server webbrowser.open() targets the remote display —
+        # that's a known OAuth-over-SSH limitation; the warning will still be logged.
+        from openrattler.integrations.google.auth import GoogleAuthError
+
+        if google_auth_manager.is_authenticated():
+            try:
+                await google_auth_manager.get_credentials()
+                logger.info("Google Workspace: startup credential check passed.")
+            except GoogleAuthError as _cred_exc:
+                logger.warning(
+                    "Google OAuth token invalid at startup (%s) — launching reauth flow.",
+                    _cred_exc,
+                )
+                try:
+                    await google_auth_manager.run_auth_flow()
+                    logger.info("Google reauth complete — startup continuing with fresh credentials.")
+                except Exception as _reauth_exc:
+                    logger.error(
+                        "Google reauth failed: %s — Google tools will be unavailable this session.",
+                        _reauth_exc,
+                    )
+        else:
+            logger.warning(
+                "Google Workspace is enabled but not yet authorized. "
+                "Run 'openrattler google-auth' to complete the OAuth flow."
+            )
+
         google_client_factory = GoogleClientFactory(google_auth_manager)
         google_sanitizer = GoogleContentSanitizer(config=config.google, audit=audit)
         calendar_handler = CalendarToolHandler(
