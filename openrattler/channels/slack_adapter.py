@@ -264,17 +264,22 @@ class SlackAdapter(ChannelAdapter):
         - Body is logged only as its character length.
         - Slack always returns HTTP 200; the ``"ok"`` field indicates success.
         """
-        # Accept tool-initiated sends (operation="send_slack_message") and
-        # runtime response messages (type="response") relayed by the channel loop.
-        if message.operation != "send_slack_message" and message.type != "response":
+        # Accept tool-initiated sends (operation="send_slack_message"),
+        # runtime response messages (type="response"), and runtime error messages
+        # (type="error") relayed by the channel loop.
+        if message.operation != "send_slack_message" and message.type not in ("response", "error"):
             raise ValueError(
                 f"SlackAdapter.send: unsupported operation '{message.operation}'; "
                 "expected 'send_slack_message' or a runtime response message"
             )
 
         channel = str(message.params.get("channel", self._channel_id))
-        # Tool-initiated sends use params["text"]; runtime responses use params["content"].
-        text = str(message.params.get("text") or message.params.get("content", ""))
+        if message.type == "error" and message.error:
+            # Surface the runtime error to the user rather than dropping it.
+            text = str(message.error.get("message", "An error occurred."))
+        else:
+            # Tool-initiated sends use params["text"]; runtime responses use params["content"].
+            text = str(message.params.get("text") or message.params.get("content", ""))
 
         url = f"{_SLACK_API_BASE}/chat.postMessage"
         payload = {"channel": channel, "text": text}
